@@ -1,0 +1,17 @@
+local/
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local credentials and generated files
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.key
+*.pem
+__pycache__/
+*.pyc
