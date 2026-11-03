@@ -243,3 +243,8 @@ GUI 增加可停止的 30 秒服务器状态监测，与真实心跳区分；状
 这证明当前会话收到多个合法心跳响应后仍被关闭；不能确认固定 60/90 秒超时，也不能断言双连接或遗漏首包就是根因。尚未完成只运行新 app 的对照，下一步由用户在方便短暂网络中断时退出原版、亲自认证并观察至少两分钟；如失败恢复原版，避免同时调整协议变量。
 
 继续静态读取原版 GetAgentPolicyList 请求构造 0x1000a3914..0x1000a3b18（local/role-changed-followup-full-llvm.txt 包含后续独立函数，不混为同一业务体）。格式字符串 0x1005b42c6 为 `<?xml version="1.0" encoding="gbk"?><ASM><TradeCode>GetAgentPolicyList</TradeCode><AgentID>%s</AgentID><requestClientType></requestClientType><DeviceType>400</DeviceType></ASM>`，AgentID 来源为 DeviceID，传入发送器 field8=1。该只读策略查询尚未实装；后续须对应响应处理，不能仅发送后将未应用策略显示为接管成功。本轮未新增真实网络探测、未修改原设备登记、未启用自动重连。
+
+
+## 新设备注册静态分析（2026-11-03）
+
+本轮未发起任何服务器请求。已从相同原版随包资源恢复注册页面及设备发现、场景、认证后状态更新和路由模块，确认 control 设备发现与 register/submit 正式登记是不同步骤，注册表由服务器动态配置，并有自动注册、重注册和待审核分支。详细字段、实现边界和证据见 [新设备注册流程](registration-flow.md)。本轮仅文档和被忽略的本机证据变动，未改当前 app 或设备登记。

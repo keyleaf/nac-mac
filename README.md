@@ -56,3 +56,5 @@ SPA 登录后交接、完整策略处理、VPN、多因素认证、睡眠唤醒�
 不提交账号密码、令牌、设备标识、服务器原始响应、第三方应用或逆向分析数据库。源码和文档不包含原版应用分发包。
 
 详细行为见 [app/README.md](app/README.md)，调查记录见 [docs/protocol-notes.md](docs/protocol-notes.md)。
+
+新设备注册的静态分析与实现顺序见 [注册流程说明](docs/registration-flow.md)。当前 app 尚未开放新设备注册提交。
