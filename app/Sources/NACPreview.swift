@@ -22,7 +22,7 @@ struct NACPreviewApp: App {
                 .environmentObject(model)
                 .frame(width: 280)
         } label: {
-            StatusLabel()
+            StatusLabel().environmentObject(model)
         }
         .menuBarExtraStyle(.window)
     }
@@ -79,11 +79,25 @@ struct ConsoleWindowPresence: NSViewRepresentable {
     }
 }
 
+private extension ConnectionState {
+    var tint: Color {
+        switch self {
+        case .connected: return .green
+        case .interrupted: return .red
+        case .needsAction, .stopped: return .orange
+        case .checking, .authenticating, .connecting: return .blue
+        case .notLoggedIn: return .secondary
+        }
+    }
+}
+
 struct StatusLabel: View {
+    @EnvironmentObject private var model: PreviewModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Label("NAC 小助手", systemImage: "network")
+            .help(model.status)
             .onReceive(NotificationCenter.default.publisher(for: PreviewAppDelegate.reopenConsole)) { _ in
                 openWindow(id: "main")
                 NSApplication.shared.setActivationPolicy(.regular)
@@ -102,10 +116,10 @@ struct MenuPanel: View {
             HStack(spacing: 10) {
                 Image(systemName: "circle.fill")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.connectionState.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.status).font(.headline)
-                    Text("公司内网认证").font(.caption).foregroundStyle(.secondary)
+                    Text(model.connectionHint).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -174,8 +188,8 @@ struct ConsoleView: View {
             }
 
             HStack(spacing: 12) {
-                summary(title: "账号认证", value: model.authenticationStatus, detail: "不代表已独立入网")
-                summary(title: "设备状态", value: model.deviceStatus, detail: "在线状态可能由原客户端维持")
+                summary(title: "连接状态", value: model.status, detail: model.connectionHint, tint: model.connectionState.tint)
+                summary(title: "设备记录", value: model.deviceStatus, detail: "服务器记录，不代表本应用已连接")
             }
 
             VStack(alignment: .leading, spacing: 13) {
@@ -205,7 +219,7 @@ struct ConsoleView: View {
                 Button {
                     model.confirmLogin = true
                 } label: {
-                    Text("提交账号认证")
+                    Text("登录并连接")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
@@ -217,31 +231,40 @@ struct ConsoleView: View {
             .background(card, in: RoundedRectangle(cornerRadius: 16))
 
             HStack {
-                Button(monitoringTitle) { model.toggleMonitoring() }
-                    .disabled(!model.ready || model.isBusy)
-                Button("单次心跳验证…") { model.confirmHeartbeat = true }
-                    .disabled(!model.ready || model.isBusy || model.heartbeating)
-            }
-            HStack {
-                Button(model.heartbeating ? "停止连续心跳" : "开启连续心跳…") {
+                Button(model.heartbeating ? "停止连接" : "重新连接") {
                     if model.heartbeating { model.stopHeartbeat() }
-                    else { model.confirmContinuousHeartbeat = true }
+                    else { model.startHeartbeat() }
                 }
-                .disabled(!model.heartbeating && (!model.ready || model.isBusy))
+                .disabled(!model.heartbeating && !model.canStartHeartbeat)
+                Text(model.heartbeatStatus)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if !model.roleChangeStatus.isEmpty {
                 Text(model.roleChangeStatus).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text(model.heartbeatStatus).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("复制心跳诊断") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(model.heartbeatStatus, forType: .string)
+            DisclosureGroup("连接诊断") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("账号认证：\(model.authenticationStatus)").font(.caption)
+                    HStack {
+                        Button(monitoringTitle) { model.toggleMonitoring() }
+                            .disabled(!model.ready || model.isBusy)
+                        Button("单次心跳验证…") { model.confirmHeartbeat = true }
+                            .disabled(!model.ready || model.isBusy || model.heartbeating)
+                    }
+                    Text("状态更新时间：\(model.lastStatusCheck) · 状态监测仅查询服务器记录")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("复制心跳诊断") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.heartbeatStatus, forType: .string)
+                    }
+                    Button("复制请求诊断") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.detail, forType: .string)
+                    }
+                }.padding(.top, 8)
             }
-            .font(.caption)
-            Text("状态更新时间：\(model.lastStatusCheck) · 监测间隔 30 秒；状态查询不等于保活")
-                .font(.caption).foregroundStyle(.secondary)
 
             VStack(spacing: 11) {
                 HStack {
@@ -277,12 +300,7 @@ struct ConsoleView: View {
             }
 
             Spacer(minLength: 0)
-            Button("复制请求诊断") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(model.detail, forType: .string)
-            }
-            .font(.caption)
-            Text("密码不保存。设备在线不代表本应用已接管保活；SPA / VPN 交接尚未接通。")
+            Text("密码不保存。连接状态依据本应用心跳，访问权限以服务器策略为准。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -315,7 +333,7 @@ struct ConsoleView: View {
             Button("取消", role: .cancel) { model.password = "" }
             Button("提交认证") { model.submitLogin() }
         } message: {
-            Text("将向 \(model.server) 提交账号及加密密码，并复用已有设备记录。可能改变现有会话、影响原客户端连接。本轮不提交新设备登记。")
+            Text("将向 \(model.server) 提交账号及加密密码，并复用已有设备记录。可能改变现有会话、影响原客户端连接。认证完成后会自动建立心跳连接，关闭窗口仍保持。")
         }
         .confirmationDialog("单次心跳验证", isPresented: $model.confirmHeartbeat, titleVisibility: .visible) {
             Button("建立连接并发送一次心跳") { model.probeHeartbeat() }
@@ -323,20 +341,14 @@ struct ConsoleView: View {
         } message: {
             Text("将向当前服务器的 37527 端口建立独立 TCP 连接，为复用记录发送一次 HeartTest。可能影响原客户端连接。不会更新设备信息或执行服务器策略，收到匹配帧也不等于独立保活已成功。")
         }
-        .confirmationDialog("开启连续心跳试验", isPresented: $model.confirmContinuousHeartbeat, titleVisibility: .visible) {
-            Button("开启 30 秒间隔心跳") { model.startHeartbeat() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将保持同一 TCP 连接，每次收到匹配的 HeartTest XML 与序列号后等待 30 秒再发送。可能影响原客户端；关闭窗口不会停止，可随时点击停止。超时或收到非心跳消息时停止，不自动重连、重新认证或执行策略。请先保留原客户端。")
-        }
     }
 
     private var monitoringTitle: String { model.monitoring ? "停止状态监测" : "开始状态监测" }
 
-    private func summary(title: String, value: String, detail: String) -> some View {
+    private func summary(title: String, value: String, detail: String, tint: Color = .primary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 23, weight: .semibold))
+            Text(value).font(.system(size: 23, weight: .semibold)).foregroundStyle(tint)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail).font(.caption).foregroundStyle(.secondary)

@@ -1,6 +1,14 @@
 import Foundation
 import Network
 
+/// Continuous transport is injectable so login transitions can be checked without real credentials.
+@MainActor
+protocol ContinuousHeartbeatSession: AnyObject {
+    func runContinuously(host: String, port: UInt16, deviceID: String,
+                         onAcknowledgement: @escaping (Int) -> Void,
+                         onRoleChanged: @escaping () -> Void) async throws
+}
+
 /// One explicitly owned TCP connection. No automatic reconnect, device update or policy execution.
 @MainActor
 final class HeartbeatProbe {
@@ -209,5 +217,14 @@ final class HeartbeatProbe {
         connection = nil
         decoder = ASMFrame.Stream()
         pending?.resume(with: reported)
+    }
+}
+
+extension HeartbeatProbe: ContinuousHeartbeatSession {
+    func runContinuously(host: String, port: UInt16, deviceID: String,
+                         onAcknowledgement: @escaping (Int) -> Void,
+                         onRoleChanged: @escaping () -> Void) async throws {
+        _ = try await run(host: host, port: port, deviceID: deviceID, maximumHeartbeats: nil,
+                          onAcknowledgement: onAcknowledgement, onRoleChanged: onRoleChanged)
     }
 }

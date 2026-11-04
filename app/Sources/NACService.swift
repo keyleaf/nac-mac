@@ -166,10 +166,21 @@ final class NACService: NACClient {
         if Self.enabled(data["FactorAuth"]) || Self.enabled(data["BindAuth"]) || Self.enabled(data["IsAgainReg"]) {
             return .init(message: "账号认证已受理，服务器要求额外认证、账号绑定或重新登记。请使用原客户端完成，尚未确认入网。", requiresFurtherAction: true)
         }
+        let registration = DeviceRegistrationState.parse(
+            response: data["Registered"].map { Self.scalar($0) }, recorded: device.registered)
+        switch registration {
+        case .awaitingApproval:
+            return .init(message: "账号已受理，设备登记仍在等待审核；尚未建立连接。", requiresFurtherAction: true)
+        case .registrationRequired:
+            return .init(message: "账号已受理，服务器要求完成设备注册或重新登记；请使用原客户端处理。", requiresFurtherAction: true)
+        case .unknown:
+            return .init(message: "账号已受理，但设备登记状态待确认；请重新检查服务器。", requiresFurtherAction: true)
+        case .registered: break
+        }
         if Self.scalar(data["IPIsInException"]) != "1" || Self.enabled(data["isvpn"]) {
             return .init(message: "账号认证已受理；登录后的 SPA / VPN 交接尚未接通，不能确认本应用已完成入网。", requiresFurtherAction: true)
         }
-        return .init(message: "账号认证已受理。请刷新设备状态核对服务器放行结果。", requiresFurtherAction: false)
+        return .init(message: "账号认证已受理，正在建立心跳连接。", requiresFurtherAction: false)
     }
 
     func accountRequiresPasswordChange(_ account: String) async throws -> Bool {
