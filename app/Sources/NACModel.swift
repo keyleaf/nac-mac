@@ -19,10 +19,45 @@ enum ConnectionState: Equatable {
 
 @MainActor
 final class PreviewModel: ObservableObject {
-    @Published var account = ""
+    @Published var account = "" {
+        didSet { if account != oldValue { password = "" } }
+    }
+    @Published var rememberPassword = false
+    @Published var credentialNotice = ""
+    @Published var showVerificationCode = false
+    private let passwordStore: any PasswordStore
+    private var credentialServer: String? {
+        guard var parts = URLComponents(string: server.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host != nil,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.path.isEmpty || parts.path == "/" else { return nil }
+        parts.scheme = parts.scheme?.lowercased(); parts.host = parts.host?.lowercased(); parts.path = ""
+        return parts.url?.absoluteString
+    }
+    var hasSavedPassword: Bool {
+        guard rememberPassword, let scope = credentialServer, !account.isEmpty else { return false }
+        return preferences.string(forKey: "savedAccount:" + scope) == account
+    }
+    func forgetPassword() {
+        guard let scope = credentialServer else { return }
+        do {
+            try passwordStore.remove(server: scope, account: account)
+            if preferences.string(forKey: "savedAccount:" + scope) == account {
+                preferences.removeObject(forKey: "savedAccount:" + scope)
+            }
+            password = ""
+            credentialNotice = "已移除当前账号保存的密码。"
+        } catch { credentialNotice = error.localizedDescription }
+    }
+    private func restoreAccount() {
+        guard let scope = credentialServer else { account = ""; rememberPassword = false; return }
+        account = preferences.string(forKey: "savedAccount:" + scope) ?? ""
+        rememberPassword = !account.isEmpty
+        credentialNotice = ""
+    }
     @Published var password = ""
     @Published var server = "" {
-        didSet { if server != oldValue { invalidate() } }
+        didSet { if server != oldValue { invalidate(); restoreAccount() } }
     }
     @Published var showSettings = false
     @Published var showDeviceInfo = false
@@ -81,11 +116,14 @@ final class PreviewModel: ObservableObject {
 
     init(preferences: UserDefaults = .standard,
          makeClient: @escaping @MainActor (String) throws -> any NACClient = { try NACService(server: $0) },
-         makeHeartbeat: @escaping @MainActor () -> any ContinuousHeartbeatSession = { HeartbeatProbe() }) {
+         makeHeartbeat: @escaping @MainActor () -> any ContinuousHeartbeatSession = { HeartbeatProbe() },
+         passwordStore: (any PasswordStore)? = nil) {
+        self.passwordStore = passwordStore ?? KeychainPasswordStore()
         self.preferences = preferences
         self.makeClient = makeClient
         self.makeHeartbeat = makeHeartbeat
         self.server = preferences.string(forKey: "serverOrigin") ?? ""
+        restoreAccount()
     }
 
     private func resetLogin() {
@@ -125,6 +163,8 @@ final class PreviewModel: ObservableObject {
         deviceRecord = nil
         ready = false
         password = ""
+        verificationCode = ""
+        showVerificationCode = false
         connectionState = .notLoggedIn
         authenticationStatus = "未提交"
         deviceStatus = "未查询"
@@ -340,14 +380,27 @@ final class PreviewModel: ObservableObject {
     }
     func submitLogin() {
         guard let client = service, ready, !isBusy,
-              !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !password.isEmpty else { return }
+              !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let submittedPassword: String
+        do {
+            if !password.isEmpty { submittedPassword = password }
+            else if hasSavedPassword, let scope = credentialServer,
+                    let stored = try passwordStore.read(server: scope, account: account), !stored.isEmpty {
+                submittedPassword = stored
+            } else {
+                credentialNotice = "请输入密码；未找到可用的已保存密码。"
+                return
+            }
+        } catch { credentialNotice = error.localizedDescription; return }
+        let savePassword = rememberPassword
+        let scope = credentialServer
         resetLogin()
         stopHeartbeat()
         stopMonitoring()
-        let submittedPassword = password
         password = ""
         let submittedAccount = account
-        let code = verificationCode
+        let code = showVerificationCode ? verificationCode : ""
+        verificationCode = ""
         isBusy = true
         loggingIn = true
         connectionState = .authenticating
@@ -373,6 +426,13 @@ final class PreviewModel: ObservableObject {
                 } else {
                     authenticationAccepted = true
                     startHeartbeat()
+                    if savePassword, rememberPassword, let scope, credentialServer == scope, account == submittedAccount {
+                        do {
+                            try passwordStore.save(submittedPassword, server: scope, account: submittedAccount)
+                            preferences.set(submittedAccount, forKey: "savedAccount:" + scope)
+                            credentialNotice = "密码已保存到本机钥匙串。"
+                        } catch { credentialNotice = "连接已建立，但密码未保存：" + error.localizedDescription }
+                    }
                 }
                 do {
                     let state = try await client.status()

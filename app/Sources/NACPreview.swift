@@ -224,12 +224,29 @@ struct ConsoleView: View {
                 TextField("公司账号", text: $model.account)
                     .textFieldStyle(.roundedBorder)
                     .disabled(model.isBusy)
-                SecureField("密码", text: $model.password)
+                SecureField(model.hasSavedPassword ? "已保存密码，留空即可使用" : "密码", text: $model.password)
                     .textFieldStyle(.roundedBorder)
                     .disabled(model.isBusy)
-                TextField("验证码（服务端要求时填写）", text: $model.verificationCode)
-                    .textFieldStyle(.roundedBorder)
+                Toggle("记住密码（本机钥匙串）", isOn: Binding(
+                    get: { model.rememberPassword },
+                    set: { enabled in
+                        model.rememberPassword = enabled
+                        if !enabled { model.forgetPassword() }
+                    }))
+                    .toggleStyle(.checkbox)
                     .disabled(model.isBusy)
+                DisclosureGroup("需要验证码时填写", isExpanded: $model.showVerificationCode) {
+                    TextField("验证码", text: $model.verificationCode)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isBusy)
+                }
+                .font(.caption)
+                .onChange(of: model.showVerificationCode) { _, shown in
+                    if !shown { model.verificationCode = "" }
+                }
+                if !model.credentialNotice.isEmpty {
+                    Text(model.credentialNotice).font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     Button(model.checkingServer ? "正在检查…" : "检查服务器 / 复用设备记录") { model.checkServer() }
                         .disabled(model.isBusy)
@@ -245,13 +262,13 @@ struct ConsoleView: View {
                 Button {
                     model.confirmLogin = true
                 } label: {
-                    Text("登录并连接")
+                    Text(model.authenticationAccepted ? "重新登录并入网" : "登录并连接")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.ready || model.isBusy || model.account.isEmpty || model.password.isEmpty)
+                .disabled(!model.ready || model.isBusy || model.account.isEmpty || (model.password.isEmpty && !model.hasSavedPassword))
             }
             .padding(17)
             .background(card, in: RoundedRectangle(cornerRadius: 16))
@@ -302,7 +319,7 @@ struct ConsoleView: View {
                 .font(.caption).foregroundStyle(.secondary)
 
             Spacer(minLength: 0)
-            Text("密码不保存。连接状态依据本应用心跳，访问权限以服务器策略为准。")
+            Text("勾选记住密码后保存到本机钥匙串。连接状态依据心跳，访问权限以服务器策略为准。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -321,7 +338,7 @@ struct ConsoleView: View {
                 Text("服务器设置").font(.title2.bold())
                 TextField("认证服务器地址", text: $model.server)
                     .textFieldStyle(.roundedBorder)
-                Text("检查时会保存有效的服务器地址，重启后自动填入。账号密码不保存。")
+                Text("检查时会保存有效的服务器地址，重启后自动填入。密码仅在勾选后保存到本机钥匙串。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {

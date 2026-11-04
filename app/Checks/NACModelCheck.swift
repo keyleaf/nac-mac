@@ -56,6 +56,13 @@ final class FakeHeartbeatSession: ContinuousHeartbeatSession {
     }
 }
 
+@MainActor final class MemoryPasswordStore: PasswordStore {
+ var values: [String: String] = [:]
+ func read(server: String, account: String) throws -> String? { values[server + "|" + account] }
+ func save(_ password: String, server: String, account: String) throws { values[server + "|" + account] = password }
+ func remove(server: String, account: String) throws { values.removeValue(forKey: server + "|" + account) }
+}
+
 @main
 struct NACModelCheck {
     @MainActor static func until(_ condition: () -> Bool) async {
@@ -200,6 +207,35 @@ struct NACModelCheck {
         authClient.completeLogin()
         for _ in 0..<20 { await Task.yield() }
         precondition(loginModel.connectionState == .notLoggedIn && !loginModel.ready && sessions.count == 4)
+        let memory = MemoryPasswordStore()
+        let savedClient = FakeNACClient("http://192.0.2.20")
+        let savedModel = PreviewModel(preferences: preferences, makeClient: { _ in savedClient },
+            makeHeartbeat: { FakeHeartbeatSession() }, passwordStore: memory)
+        savedModel.server = "http://192.0.2.20"
+        savedClient.heartbeatPort = nil // No transport needed to test credential handling.
+        savedModel.checkServer()
+        await until { savedClient.pending != nil }; savedClient.succeed()
+        await until { !savedModel.isBusy }
+        savedModel.account = "synthetic"; savedModel.password = "synthetic-only"; savedModel.rememberPassword = true
+        savedModel.submitLogin()
+        await until { savedClient.loginPending != nil }; savedClient.failLogin()
+        await until { !savedModel.isBusy }
+        precondition(memory.values.isEmpty)
+        savedModel.password = "synthetic-only"; savedModel.submitLogin()
+        await until { savedClient.loginPending != nil }; savedClient.completeLogin()
+        await until { !savedModel.isBusy }
+        precondition(savedModel.hasSavedPassword && savedModel.password.isEmpty)
+        precondition(memory.values["http://192.0.2.20|synthetic"] == "synthetic-only")
+        let restored = PreviewModel(preferences: preferences, passwordStore: memory)
+        precondition(restored.account == "synthetic" && restored.password.isEmpty && restored.hasSavedPassword)
+        savedModel.submitLogin()
+        await until { savedClient.loginPending != nil }
+        precondition(savedClient.loginRequests == 3)
+        savedClient.completeLogin(); await until { !savedModel.isBusy }
+        savedModel.rememberPassword = false; savedModel.forgetPassword()
+        precondition(memory.values.isEmpty && !savedModel.hasSavedPassword)
+        precondition(!(preferences.persistentDomain(forName: suite) ?? [:]).values.contains { ($0 as? String) == "synthetic-only" })
+        print("PASS: failed login not saved, opt-in persistence, explicit re-login from store, restoration without plaintext and deletion")
         print("PASS: login follow-up and failures blocked, automatic single heartbeat, ACK-only connected state, stop/reconnect/remote close, stale login isolation")
         print("PASS: empty-server guidance, visible failure and retry, server persistence without credentials, cancellation and stale-check isolation")
     }
