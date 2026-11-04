@@ -25,6 +25,15 @@ final class PreviewModel: ObservableObject {
         didSet { if server != oldValue { invalidate() } }
     }
     @Published var showSettings = false
+    @Published var showDeviceInfo = false
+    @Published private(set) var deviceRecord: DeviceRecord?
+    @Published private(set) var localDevice = LocalDeviceInformation.read()
+
+    func openDeviceInfo() {
+        localDevice = .read()
+        showDeviceInfo = true
+    }
+    func refreshLocalDeviceInfo() { localDevice = .read() }
     @Published var confirmLogin = false
     @Published var isBusy = false
     @Published var ready = false
@@ -101,6 +110,7 @@ final class PreviewModel: ObservableObject {
         resetCheck()
         ready = false
         service = nil
+        deviceRecord = nil
         deviceStatus = "未查询"
         connectionState = .notLoggedIn
         detail = "可调整服务器地址后重试。"
@@ -112,6 +122,7 @@ final class PreviewModel: ObservableObject {
         stopHeartbeat()
         stopMonitoring()
         service = nil
+        deviceRecord = nil
         ready = false
         password = ""
         connectionState = .notLoggedIn
@@ -133,6 +144,7 @@ final class PreviewModel: ObservableObject {
         stopMonitoring()
         resetCheck()
         service = nil
+        deviceRecord = nil
         isBusy = true
         checkingServer = true
         ready = false
@@ -156,6 +168,8 @@ final class PreviewModel: ObservableObject {
                 let device = try await client.prepare()
                 guard !Task.isCancelled, checkGeneration == generation else { return }
                 service = client
+                deviceRecord = device
+                localDevice = .read()
                 ready = true
                 connectionState = .notLoggedIn
                 detail = "复用现有记录（系统：\(device.recordedOS)，登记状态：\(device.registered)）。未修改服务器登记信息。"

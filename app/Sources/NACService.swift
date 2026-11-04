@@ -25,11 +25,7 @@ final class NACService: NACClient {
         let message: String
         var errorDescription: String? { message }
     }
-    struct Device {
-        let id: String
-        let recordedOS: String
-        let registered: String
-    }
+    typealias Device = DeviceRecord
     struct LoginResult {
         let message: String
         let requiresFurtherAction: Bool
@@ -104,9 +100,8 @@ final class NACService: NACClient {
         let result = try await post("device/infoprocess", [("gettype", "ipgetmac"), ("newMobile", "1"),
             ("is_guest", "0"), ("wechatid", "0"), ("is_mobile", "0"), ("os_platform", "macOS")])
         guard let fields = result["data"] as? [String: Any] else { throw Failure(message: "服务器未返回现有设备记录") }
-        let id = Self.scalar(fields["DeviceID"])
-        guard !id.isEmpty, id != "0" else { throw Failure(message: "当前 IP 没有可复用的设备记录；未提交新登记") }
-        let found = Device(id: id, recordedOS: Self.scalar(fields["OSName"]), registered: Self.scalar(fields["Registered"]))
+        let found = Device(fields: fields)
+        guard !found.id.isEmpty, found.id != "0" else { throw Failure(message: "当前 IP 没有可复用的设备记录；未提交新登记") }
         device = found
         return found
     }

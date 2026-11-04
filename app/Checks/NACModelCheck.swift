@@ -88,6 +88,9 @@ struct NACModelCheck {
         clients[1].succeed()
         await until { !model.checkingServer }
         precondition(model.ready && !model.isBusy && model.deviceStatus.contains("在线"))
+        precondition(model.deviceRecord?.id == "synthetic")
+        model.openDeviceInfo()
+        precondition(model.showDeviceInfo && model.ready && model.localDevice.system.hasPrefix("macOS "))
         precondition(PreviewModel(preferences: preferences).server == "http://192.0.2.10")
         precondition(Set(preferences.persistentDomain(forName: suite)!.keys) == Set(["serverOrigin"]))
 
@@ -111,7 +114,7 @@ struct NACModelCheck {
         model.checkServer()
         await until { clients.count == 5 && clients[4].pending != nil }
         model.server = "http://192.0.2.12"
-        precondition(!model.ready && !model.isBusy && !model.checkingServer)
+        precondition(!model.ready && !model.isBusy && !model.checkingServer && model.deviceRecord == nil)
         clients[4].succeed()
         for _ in 0..<20 { await Task.yield() }
         precondition(!model.ready && model.server == "http://192.0.2.12")

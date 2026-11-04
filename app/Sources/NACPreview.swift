@@ -275,8 +275,9 @@ struct ConsoleView: View {
                 }
                 Divider()
                 HStack {
-                    Label("本机网络", systemImage: "globe")
+                    Label("设备信息", systemImage: "laptopcomputer")
                     Spacer()
+                    Button("查看") { model.openDeviceInfo() }
                     Button("刷新设备状态") { model.refreshStatus() }.disabled(!model.ready || model.isBusy)
                 }
             }
@@ -311,6 +312,9 @@ struct ConsoleView: View {
         .background(Color(red: 0.105, green: 0.12, blue: 0.115))
         .background(ConsoleWindowPresence().frame(width: 0, height: 0))
         .onDisappear { model.password = "" }
+        .sheet(isPresented: $model.showDeviceInfo) {
+            DeviceInformationView().environmentObject(model)
+        }
         .sheet(isPresented: $model.showSettings) {
             VStack(alignment: .leading, spacing: 15) {
                 Text("服务器设置").font(.title2.bold())
@@ -356,5 +360,88 @@ struct ConsoleView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(15)
         .background(card, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+struct DeviceInformationView: View {
+    @EnvironmentObject private var model: PreviewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("设备信息").font(.title2.bold())
+                Spacer()
+                Button("完成") { model.showDeviceInfo = false }.keyboardShortcut(.defaultAction)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    section("当前 Mac") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            row("电脑名称", model.localDevice.name)
+                            row("硬件型号", model.localDevice.model)
+                            row("系统", model.localDevice.system)
+                            if model.localDevice.addresses.isEmpty {
+                                row("IPv4 网络", "未获取到活动地址")
+                            }
+                            ForEach(model.localDevice.addresses) { address in
+                                Divider()
+                                row("网卡", address.interface)
+                                row("IPv4", address.ip)
+                                row("网卡 MAC", address.mac)
+                            }
+                        }
+                    }
+                    section("服务器登记资料") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let device = model.deviceRecord {
+                                row("设备名称", device.name)
+                                row("设备 ID", device.id)
+                                row("登记系统", device.recordedOS)
+                                row("登记状态", device.registrationDescription)
+                                row("登记 IP", device.ip)
+                                row("登记 MAC", device.mac)
+                                row("部门", device.department)
+                                row("位置", device.location)
+                                Text("来自最近一次设备检查。当前复用已有记录，登记资料可能与这台 Mac 不同。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Text("检查服务器后显示对应的设备登记资料。")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            HStack {
+                Button("刷新本机信息") { model.refreshLocalDeviceInfo() }
+                Spacer()
+                Text("仅展示，不更新服务器登记。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(width: 480, height: 570)
+        .preferredColorScheme(.dark)
+        .background(Color(red: 0.105, green: 0.12, blue: 0.115))
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text(label).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
+            Text(value.isEmpty ? "未提供" : value)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }.font(.callout)
     }
 }
