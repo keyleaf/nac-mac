@@ -1,6 +1,7 @@
 local/
 .DS_Store
 .build/
+.idea/
 DerivedData/
 *.xcuserstate
 xcuserdata/
