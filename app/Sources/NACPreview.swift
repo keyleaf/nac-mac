@@ -187,10 +187,36 @@ struct ConsoleView: View {
                     .background(.white.opacity(0.08), in: Capsule())
             }
 
-            HStack(spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 summary(title: "连接状态", value: model.status, detail: model.connectionHint, tint: model.connectionState.tint)
-                summary(title: "设备记录", value: model.deviceStatus, detail: "服务器记录，不代表本应用已连接")
+                VStack(alignment: .leading, spacing: 11) {
+                    HStack {
+                        Label("认证服务器", systemImage: "server.rack")
+                            .font(.subheadline)
+                        Spacer(minLength: 4)
+                        Button("设置") { model.showSettings = true }
+                            .controlSize(.small)
+                            .disabled(model.isBusy)
+                    }
+                    Text(model.server.isEmpty ? "未配置，请先设置" : model.server)
+                        .font(.callout)
+                        .foregroundStyle(model.server.isEmpty ? Color.orange : Color.primary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    HStack {
+                        Label("设备信息", systemImage: "laptopcomputer")
+                        Spacer(minLength: 4)
+                        Button("查看") { model.openDeviceInfo() }
+                            .controlSize(.small)
+                    }.font(.subheadline)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(15)
+                .background(card, in: RoundedRectangle(cornerRadius: 16))
             }
+            .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 13) {
                 Label("账号登录", systemImage: "person.crop.circle")
@@ -248,6 +274,12 @@ struct ConsoleView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("账号认证：\(model.authenticationStatus)").font(.caption)
                     HStack {
+                        Text("设备记录：\(model.deviceStatus)").font(.caption)
+                        Spacer()
+                        Button("刷新设备状态") { model.refreshStatus() }
+                            .disabled(!model.ready || model.isBusy)
+                    }
+                    HStack {
                         Button(monitoringTitle) { model.toggleMonitoring() }
                             .disabled(!model.ready || model.isBusy)
                         Button("单次心跳验证…") { model.confirmHeartbeat = true }
@@ -266,39 +298,8 @@ struct ConsoleView: View {
                 }.padding(.top, 8)
             }
 
-            VStack(spacing: 11) {
-                HStack {
-                    Label("认证服务器", systemImage: "server.rack")
-                    Spacer()
-                    Text(model.server.isEmpty ? "尚未设置" : model.server)
-                        .lineLimit(1)
-                }
-                Divider()
-                HStack {
-                    Label("设备信息", systemImage: "laptopcomputer")
-                    Spacer()
-                    Button("查看") { model.openDeviceInfo() }
-                    Button("刷新设备状态") { model.refreshStatus() }.disabled(!model.ready || model.isBusy)
-                }
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(15)
-            .background(card, in: RoundedRectangle(cornerRadius: 16))
-
-            HStack {
-                Button {
-                    model.showSettings = true
-                } label: {
-                    Label("服务器设置", systemImage: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.isBusy)
-                Spacer()
-                Text("关闭窗口后，菜单栏仍保留")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("关闭窗口后，菜单栏仍保留")
+                .font(.caption).foregroundStyle(.secondary)
 
             Spacer(minLength: 0)
             Text("密码不保存。连接状态依据本应用心跳，访问权限以服务器策略为准。")
@@ -357,7 +358,7 @@ struct ConsoleView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(15)
         .background(card, in: RoundedRectangle(cornerRadius: 16))
     }
