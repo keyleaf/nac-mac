@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CHECK_DIR="$(mktemp -d "${TMPDIR:-/private/tmp}/nac-protocol-checks.XXXXXX")"
 trap 'rm -rf "$CHECK_DIR"' EXIT
 for check in "$SCRIPT_DIR"/Checks/*Check.swift; do
-    case "$(basename "$check")" in ServicePreflightCheck.swift|HeartbeatTransportCheck.swift|HeartbeatDiagnosticCheck.swift|AccountPolicyDiagnosticCheck.swift) continue ;; esac
+    case "$(basename "$check")" in NACModelCheck.swift|ServicePreflightCheck.swift|HeartbeatTransportCheck.swift|HeartbeatDiagnosticCheck.swift|AccountPolicyDiagnosticCheck.swift) continue ;; esac
     check_name="$(basename "$check" .swift)"
     xcrun swiftc -parse-as-library \
         -module-cache-path /private/tmp/nac-swift-module-cache \

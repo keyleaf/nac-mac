@@ -13,6 +13,7 @@ xcrun swiftc \
   -module-cache-path /private/tmp/nac-swift-module-cache \
   "$APP_DIR/app/Sources/NACPreview.swift" \
   "$APP_DIR/app/Sources/NACService.swift" \
+  "$APP_DIR/app/Sources/NACModel.swift" \
   "$APP_DIR/app/Sources/HeartbeatProbe.swift" \
   "$APP_DIR/app/Sources/NACProtocol/"*.swift \
   -framework SwiftUI \
@@ -33,7 +34,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.8</string>
+    <string>0.8.2</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

@@ -9,7 +9,18 @@ final class NoRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor
-final class NACService {
+protocol NACClient: AnyObject {
+    var origin: URL { get }
+    var device: NACService.Device? { get }
+    var heartbeatPort: UInt16? { get }
+    func prepare() async throws -> NACService.Device
+    func status() async throws -> String
+    func login(account: String, password: String, verificationCode: String) async throws -> NACService.LoginResult
+    func refreshAfterRoleChange() async throws -> String
+}
+
+@MainActor
+final class NACService: NACClient {
     struct Failure: LocalizedError {
         let message: String
         var errorDescription: String? { message }
