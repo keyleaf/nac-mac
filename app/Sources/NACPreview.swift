@@ -11,7 +11,7 @@ struct NACPreviewApp: App {
         Window("NAC 小助手", id: "main") {
             ConsoleView()
                 .environmentObject(model)
-                .frame(width: 490, height: 750)
+                .frame(width: 490, height: 560)
         }
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.presented)
@@ -119,42 +119,44 @@ struct MenuPanel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "circle.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: 7))
                     .foregroundStyle(model.connectionState.tint)
-                VStack(alignment: .leading, spacing: 3) {
+                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 5) {
                     Text(model.status).font(.headline)
-                    Text(model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !model.account.isEmpty {
+                        Text(model.account).font(.callout).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    if let last = model.lastHeartbeat, model.heartbeatCount > 0 {
+                        Text("心跳 \(model.heartbeatCount) 次 · 最近 \(last.formatted(date: .omitted, time: .standard))")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(model.connectionHint).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
 
             Divider()
-
-            HStack {
-                Label("账号", systemImage: "person")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(model.account.isEmpty ? "未填写" : model.account)
-                    .lineLimit(1)
-            }
-            .font(.callout)
 
             Button {
                 NSApplication.shared.setActivationPolicy(.regular)
                 openWindow(id: "main")
                 NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
-                Label("打开控制台", systemImage: "rectangle.on.rectangle")
+                Text("打开窗口")
+                    .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            Divider()
 
             HStack {
                 Text(AppMetadata.version)
@@ -163,6 +165,7 @@ struct MenuPanel: View {
                 Spacer()
                 Button("退出") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(.borderless)
+                    .font(.caption)
             }
         }
         .padding(16)
@@ -178,8 +181,6 @@ struct ConsoleView: View {
     var body: some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 12) {
-                summary(title: "连接状态", value: model.status, detail: model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint, tint: model.connectionState.tint)
                 VStack(alignment: .leading, spacing: 11) {
                     HStack {
                         Label("认证服务器", systemImage: "server.rack")
@@ -206,10 +207,32 @@ struct ConsoleView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(15)
                 .background(card, in: RoundedRectangle(cornerRadius: 16))
-            }
-            .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 13) {
+                if model.authenticationAccepted && !model.editingCredentials {
+                    Text(model.status)
+                        .font(.title2.bold())
+                        .foregroundStyle(model.connectionState.tint)
+                    Text(model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("重新登录") {
+                            if model.hasSavedPassword || !model.password.isEmpty { model.confirmLogin = true }
+                            else { model.editingCredentials = true }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isBusy)
+                        Button("编辑账号") { model.editingCredentials = true }
+                            .disabled(model.isBusy)
+                        Spacer()
+                        Button(model.heartbeating ? "停止连接" : "重新连接") {
+                            if model.heartbeating { model.stopHeartbeat() }
+                            else { model.startHeartbeat() }
+                        }
+                        .disabled(!model.heartbeating && !model.canStartHeartbeat)
+                    }
+                } else {
                 Label("账号登录", systemImage: "person.crop.circle")
                     .font(.headline)
                 TextField("公司账号", text: $model.account)
@@ -251,23 +274,23 @@ struct ConsoleView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.ready || model.isBusy || model.account.isEmpty || (model.password.isEmpty && !model.hasSavedPassword))
+                if model.authenticationAccepted {
+                    Button("返回连接状态") {
+                        model.password = ""
+                        model.editingCredentials = false
+                    }.disabled(model.isBusy)
+                }
+                }
             }
             .padding(17)
             .background(card, in: RoundedRectangle(cornerRadius: 16))
 
-            HStack {
-                Button(model.heartbeating ? "停止连接" : "重新连接") {
-                    if model.heartbeating { model.stopHeartbeat() }
-                    else { model.startHeartbeat() }
-                }
-                .disabled(!model.heartbeating && !model.canStartHeartbeat)
-            }
-            if !model.roleChangeStatus.isEmpty {
-                Text(model.roleChangeStatus).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             DisclosureGroup("连接诊断") {
                 VStack(alignment: .leading, spacing: 12) {
+                    if !model.roleChangeStatus.isEmpty {
+                        Text(model.roleChangeStatus).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(model.heartbeatStatus).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text("账号认证：\(model.authenticationStatus)").font(.caption)
@@ -303,6 +326,9 @@ struct ConsoleView: View {
         .background(Color(red: 0.105, green: 0.12, blue: 0.115))
         .background(ConsoleWindowPresence().frame(width: 0, height: 0))
         .onDisappear { model.password = "" }
+        .onChange(of: model.authenticationAccepted) { _, accepted in
+            if accepted { model.editingCredentials = false }
+        }
         .sheet(isPresented: $model.showDeviceInfo) {
             DeviceInformationView().environmentObject(model)
         }
@@ -344,18 +370,7 @@ struct ConsoleView: View {
 
     private var monitoringTitle: String { model.monitoring ? "停止状态监测" : "开始状态监测" }
 
-    private func summary(title: String, value: String, detail: String, tint: Color = .primary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 23, weight: .semibold)).foregroundStyle(tint)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(detail).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(15)
-        .background(card, in: RoundedRectangle(cornerRadius: 16))
-    }
+
 }
 
 struct DeviceInformationView: View {

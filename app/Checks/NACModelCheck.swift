@@ -175,7 +175,7 @@ struct NACModelCheck {
         loginModel.saveServerSettings()
         precondition(!loginModel.settingsError.isEmpty && loginModel.heartbeating && loginModel.connectionState == .connected)
         loginModel.showSettings = false
-        precondition(loginModel.connectionState == .connected && loginModel.detail.contains("已建立"))
+        precondition(loginModel.connectionState == .connected && loginModel.detail.isEmpty)
         loginModel.stopHeartbeat()
         precondition(loginModel.connectionState == .stopped && !loginModel.heartbeating)
         sessions[0].acknowledge?(2)

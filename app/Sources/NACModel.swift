@@ -45,7 +45,7 @@ final class PreviewModel: ObservableObject {
                 preferences.removeObject(forKey: "savedAccount:" + scope)
             }
             password = ""
-            credentialNotice = "已移除当前账号保存的密码。"
+            credentialNotice = ""
         } catch { credentialNotice = error.localizedDescription }
     }
     private func restoreAccount() {
@@ -88,6 +88,7 @@ final class PreviewModel: ObservableObject {
     }
     func refreshLocalDeviceInfo() { localDevice = .read() }
     @Published var confirmLogin = false
+    @Published var editingCredentials = false
     @Published var isBusy = false
     @Published var ready = false
     @Published private(set) var connectionState: ConnectionState = .notLoggedIn
@@ -100,7 +101,7 @@ final class PreviewModel: ObservableObject {
         case .checking: return "正在读取配置和设备记录"
         case .authenticating: return "正在验证账号"
         case .needsAction: return "请查看下方认证结果"
-        case .connecting: return "账号已受理，等待首次心跳应答"
+        case .connecting: return "等待首次心跳应答"
         case .connected: return "本应用心跳已应答"
         case .stopped: return "可手动重新连接"
         case .interrupted: return "保活已停止，请查看连接诊断"
@@ -346,7 +347,7 @@ final class PreviewModel: ObservableObject {
         lastHeartbeat = nil
         connectionState = .connecting
         heartbeatStatus = "正在连接，等待首次心跳应答…"
-        detail = "账号认证已受理，正在建立心跳连接。"
+        detail = "正在连接…"
         heartbeatTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -357,7 +358,7 @@ final class PreviewModel: ObservableObject {
                         self.heartbeatCount = count
                         self.lastHeartbeat = Date()
                         self.heartbeatStatus = "心跳已应答 \(count) 次 · \(Date().formatted(date: .omitted, time: .standard))"
-                        if count == 1 { self.detail = "账号认证已受理，心跳连接已建立。" }
+                        if count == 1 { self.detail = "" }
                     }, onRoleChanged: { [weak self] in
                         self?.refreshRole(service: service, generation: generation)
                     })
@@ -374,7 +375,7 @@ final class PreviewModel: ObservableObject {
                 guard self.heartbeatGeneration == generation else { return }
                 self.connectionState = .interrupted
                 self.heartbeatStatus = (error as? HeartbeatProbe.Failure)?.message ?? "心跳异常，已停止"
-                self.detail = "账号认证已受理，但心跳连接已中断；可查看连接诊断或重新连接。"
+                self.detail = "心跳连接已中断，可查看连接诊断或重新连接。"
             }
             guard self.heartbeatGeneration == generation else { return }
             self.heartbeating = false
@@ -384,7 +385,7 @@ final class PreviewModel: ObservableObject {
     }
     private func refreshRole(service: any NACClient, generation: UUID) {
         guard heartbeatGeneration == generation else { return }
-        roleChangeStatus = "收到角色变更；策略处理待接通，请保留原客户端。"
+        roleChangeStatus = ""
         guard roleRefreshTask == nil else { return }
         roleRefreshTask = Task { [weak self] in
             guard let self else { return }
@@ -394,7 +395,7 @@ final class PreviewModel: ObservableObject {
                 guard self.heartbeatGeneration == generation, self.service === service else { return }
                 self.deviceStatus = refreshed
                 self.recordCheck()
-                self.roleChangeStatus = "角色变更：配置与状态已刷新；策略处理待接通，请保留原客户端。"
+                self.roleChangeStatus = ""
             } catch {
                 guard self.heartbeatGeneration == generation else { return }
                 self.roleChangeStatus = "角色变更后刷新失败：\(error.localizedDescription)；请保留原客户端。"
@@ -456,8 +457,8 @@ final class PreviewModel: ObservableObject {
                         do {
                             try passwordStore.save(submittedPassword, server: scope, account: submittedAccount)
                             preferences.set(submittedAccount, forKey: "savedAccount:" + scope)
-                            credentialNotice = "密码已保存到本机钥匙串。"
-                        } catch { credentialNotice = "连接已建立，但密码未保存：" + error.localizedDescription }
+                            credentialNotice = ""
+                        } catch { credentialNotice = "密码未保存：" + error.localizedDescription }
                     }
                 }
                 do {
