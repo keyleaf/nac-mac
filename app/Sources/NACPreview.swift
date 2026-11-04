@@ -178,24 +178,6 @@ struct ConsoleView: View {
     var body: some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                Image(systemName: "network")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("NAC 小助手").font(.title2.bold())
-                    Text(model.status)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(AppMetadata.version)
-                    .font(.caption)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.08), in: Capsule())
-            }
-
             HStack(alignment: .top, spacing: 12) {
                 summary(title: "连接状态", value: model.status, detail: model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint, tint: model.connectionState.tint)
                 VStack(alignment: .leading, spacing: 11) {

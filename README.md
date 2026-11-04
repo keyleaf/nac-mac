@@ -31,7 +31,7 @@ open "local/NAC Preview.app"
 bash app/build-app.sh
 ```
 
-生成 `local/NAC 小助手-0.11.1.app`（当前版本 0.11.1），可复制到 `~/Applications`。脚本使用当前 Mac 架构编译优化版本，生成 Finder / Dock 图标并进行 ad-hoc 本机签名验证；没有 Developer ID 签名或公证，不作为跨机器发行包。
+生成 `local/NAC 小助手-0.11.2.app`（当前版本 0.11.2），可复制到 `~/Applications`。脚本使用当前 Mac 架构编译优化版本，生成 Finder / Dock 图标并进行 ad-hoc 本机签名验证；没有 Developer ID 签名或公证，不作为跨机器发行包。
 
 打包输出已存在时脚本会停止，请先移走旧的本地打包输出再重新构建。不要覆盖正在运行的应用。测试安装版前先退出旧预览版和原客户端，再手动设置服务器、登录并开启心跳；初次运行不自动连接。
 
