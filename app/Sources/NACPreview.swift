@@ -107,6 +107,13 @@ struct StatusLabel: View {
 }
 
 
+private enum AppMetadata {
+    static var version: String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return "开发版" }
+        return "v" + value
+    }
+}
+
 struct MenuPanel: View {
     @EnvironmentObject private var model: PreviewModel
     @Environment(\.openWindow) private var openWindow
@@ -119,8 +126,8 @@ struct MenuPanel: View {
                     .foregroundStyle(model.connectionState.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.status).font(.headline)
-                    Text(model.connectionHint).font(.caption).foregroundStyle(.secondary)
-                    Text(model.heartbeatSummary).font(.caption).foregroundStyle(.secondary)
+                    Text(model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint)
+                        .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -150,7 +157,7 @@ struct MenuPanel: View {
             Divider()
 
             HStack {
-                Text("登录联调版")
+                Text(AppMetadata.version)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -182,7 +189,7 @@ struct ConsoleView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("联调")
+                Text(AppMetadata.version)
                     .font(.caption)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -190,7 +197,7 @@ struct ConsoleView: View {
             }
 
             HStack(alignment: .top, spacing: 12) {
-                summary(title: "连接状态", value: model.status, detail: model.connectionHint, tint: model.connectionState.tint)
+                summary(title: "连接状态", value: model.status, detail: model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint, tint: model.connectionState.tint)
                 VStack(alignment: .leading, spacing: 11) {
                     HStack {
                         Label("认证服务器", systemImage: "server.rack")
@@ -272,9 +279,6 @@ struct ConsoleView: View {
                     else { model.startHeartbeat() }
                 }
                 .disabled(!model.heartbeating && !model.canStartHeartbeat)
-                Text(model.heartbeatStatus)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             if !model.roleChangeStatus.isEmpty {
                 Text(model.roleChangeStatus).font(.caption).foregroundStyle(.secondary)
@@ -282,6 +286,8 @@ struct ConsoleView: View {
             }
             DisclosureGroup("连接诊断") {
                 VStack(alignment: .leading, spacing: 12) {
+                    Text(model.heartbeatStatus).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("账号认证：\(model.authenticationStatus)").font(.caption)
                     HStack {
                         Text("设备记录：\(model.deviceStatus)").font(.caption)
@@ -308,14 +314,6 @@ struct ConsoleView: View {
                 }.padding(.top, 8)
             }
 
-            Text("关闭窗口后，菜单栏仍保留")
-                .font(.caption).foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-            Text("勾选记住密码后保存到本机钥匙串。连接状态依据心跳，访问权限以服务器策略为准。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(22)
         }
