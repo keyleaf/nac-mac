@@ -280,4 +280,3 @@ final class PreviewModel: ObservableObject {
         else { detail = "请求、配置解析或加密失败。请确认公司内网和服务器地址后重试。" }
     }
 }
-
