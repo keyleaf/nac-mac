@@ -120,6 +120,8 @@ struct MenuPanel: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.status).font(.headline)
                     Text(model.connectionHint).font(.caption).foregroundStyle(.secondary)
+                    Text(model.heartbeatSummary).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
             }
@@ -194,7 +196,7 @@ struct ConsoleView: View {
                         Label("认证服务器", systemImage: "server.rack")
                             .font(.subheadline)
                         Spacer(minLength: 4)
-                        Button("设置") { model.showSettings = true }
+                        Button("设置") { model.openSettings() }
                             .controlSize(.small)
                             .disabled(model.isBusy)
                     }
@@ -227,7 +229,7 @@ struct ConsoleView: View {
                 SecureField(model.hasSavedPassword ? "已保存密码，留空即可使用" : "密码", text: $model.password)
                     .textFieldStyle(.roundedBorder)
                     .disabled(model.isBusy)
-                Toggle("记住密码（本机钥匙串）", isOn: Binding(
+                Toggle("记住密码", isOn: Binding(
                     get: { model.rememberPassword },
                     set: { enabled in
                         model.rememberPassword = enabled
@@ -235,15 +237,6 @@ struct ConsoleView: View {
                     }))
                     .toggleStyle(.checkbox)
                     .disabled(model.isBusy)
-                DisclosureGroup("需要验证码时填写", isExpanded: $model.showVerificationCode) {
-                    TextField("验证码", text: $model.verificationCode)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(model.isBusy)
-                }
-                .font(.caption)
-                .onChange(of: model.showVerificationCode) { _, shown in
-                    if !shown { model.verificationCode = "" }
-                }
                 if !model.credentialNotice.isEmpty {
                     Text(model.credentialNotice).font(.caption).foregroundStyle(.secondary)
                 }
@@ -262,7 +255,7 @@ struct ConsoleView: View {
                 Button {
                     model.confirmLogin = true
                 } label: {
-                    Text(model.authenticationAccepted ? "重新登录并入网" : "登录并连接")
+                    Text(model.authenticationAccepted ? "重新登录" : "登录")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
@@ -336,14 +329,18 @@ struct ConsoleView: View {
         .sheet(isPresented: $model.showSettings) {
             VStack(alignment: .leading, spacing: 15) {
                 Text("服务器设置").font(.title2.bold())
-                TextField("认证服务器地址", text: $model.server)
+                TextField("认证服务器地址", text: $model.serverDraft)
                     .textFieldStyle(.roundedBorder)
-                Text("检查时会保存有效的服务器地址，重启后自动填入。密码仅在勾选后保存到本机钥匙串。")
+                Text("保存后自动检查服务器，重启后保留此地址。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !model.settingsError.isEmpty {
+                    Text(model.settingsError).font(.caption).foregroundStyle(.red)
+                }
                 HStack {
                     Spacer()
-                    Button("完成") { model.showSettings = false }
+                    Button("取消", role: .cancel) { model.showSettings = false }
+                    Button("保存") { model.saveServerSettings() }
                         .keyboardShortcut(.defaultAction)
                 }
             }

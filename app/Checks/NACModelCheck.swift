@@ -168,22 +168,31 @@ struct NACModelCheck {
         loginModel.startHeartbeat()
         precondition(sessions.count == 1)
         sessions[0].acknowledge?(1)
+        precondition(loginModel.heartbeatCount == 1 && loginModel.lastHeartbeat != nil && loginModel.heartbeatSummary.contains("1 次"))
+        loginModel.openSettings()
+        loginModel.serverDraft = "invalid origin"
+        precondition(loginModel.server == "http://192.0.2.20" && loginModel.heartbeating)
+        loginModel.saveServerSettings()
+        precondition(!loginModel.settingsError.isEmpty && loginModel.heartbeating && loginModel.connectionState == .connected)
+        loginModel.showSettings = false
         precondition(loginModel.connectionState == .connected && loginModel.detail.contains("已建立"))
         loginModel.stopHeartbeat()
         precondition(loginModel.connectionState == .stopped && !loginModel.heartbeating)
         sessions[0].acknowledge?(2)
         sessions[0].fail()
         for _ in 0..<20 { await Task.yield() }
-        precondition(loginModel.connectionState == .stopped)
+        precondition(loginModel.connectionState == .stopped && loginModel.heartbeatCount == 1)
 
         // Manual reconnect reuses accepted authentication; remote close stops, without retry loops.
         loginModel.startHeartbeat()
         await until { sessions.count == 2 && sessions[1].pending != nil }
+        precondition(loginModel.heartbeatCount == 0 && loginModel.lastHeartbeat == nil)
         sessions[1].acknowledge?(1)
         precondition(loginModel.connectionState == .connected && authClient.loginRequests == 3)
         sessions[1].fail()
         await until { !loginModel.heartbeating }
         precondition(loginModel.connectionState == .interrupted && sessions.count == 2 && loginModel.canStartHeartbeat)
+        precondition(loginModel.heartbeatCount == 1 && loginModel.lastHeartbeat != nil)
         loginModel.startHeartbeat()
         await until { sessions.count == 3 && sessions[2].pending != nil }
         sessions[2].fail()
@@ -207,6 +216,19 @@ struct NACModelCheck {
         authClient.completeLogin()
         for _ in 0..<20 { await Task.yield() }
         precondition(loginModel.connectionState == .notLoggedIn && !loginModel.ready && sessions.count == 4)
+        let previousChecks = clients.count
+        model.openSettings()
+        model.serverDraft = "http://192.0.2.30"
+        precondition(model.server == "http://192.0.2.12")
+        model.saveServerSettings()
+        precondition(!model.showSettings && model.checkingServer)
+        await until { clients.count == previousChecks + 1 && clients.last?.pending != nil }
+        clients.last!.succeed()
+        await until { !model.checkingServer }
+        precondition(model.ready && model.server == "http://192.0.2.30")
+        precondition(preferences.string(forKey: "serverOrigin") == "http://192.0.2.30")
+        print("PASS: draft editing preserves live connection, invalid save rejected, valid save checks automatically, heartbeat count/time retain and reset")
+
         let memory = MemoryPasswordStore()
         let savedClient = FakeNACClient("http://192.0.2.20")
         let savedModel = PreviewModel(preferences: preferences, makeClient: { _ in savedClient },

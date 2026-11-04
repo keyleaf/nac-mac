@@ -24,7 +24,6 @@ final class PreviewModel: ObservableObject {
     }
     @Published var rememberPassword = false
     @Published var credentialNotice = ""
-    @Published var showVerificationCode = false
     private let passwordStore: any PasswordStore
     private var credentialServer: String? {
         guard var parts = URLComponents(string: server.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -60,6 +59,25 @@ final class PreviewModel: ObservableObject {
         didSet { if server != oldValue { invalidate(); restoreAccount() } }
     }
     @Published var showSettings = false
+    @Published var serverDraft = ""
+    @Published var settingsError = ""
+    func openSettings() {
+        serverDraft = server
+        settingsError = ""
+        showSettings = true
+    }
+    func saveServerSettings() {
+        let address = serverDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            _ = try NACService(server: address)
+            let needsCheck = address != server || !ready
+            server = address
+            preferences.set(address, forKey: "serverOrigin")
+            settingsError = ""
+            showSettings = false
+            if needsCheck { checkServer() }
+        } catch { settingsError = error.localizedDescription }
+    }
     @Published var showDeviceInfo = false
     @Published private(set) var deviceRecord: DeviceRecord?
     @Published private(set) var localDevice = LocalDeviceInformation.read()
@@ -72,7 +90,6 @@ final class PreviewModel: ObservableObject {
     @Published var confirmLogin = false
     @Published var isBusy = false
     @Published var ready = false
-    @Published var verificationCode = ""
     @Published private(set) var connectionState: ConnectionState = .notLoggedIn
     var status: String { connectionState.title }
     @Published private(set) var authenticationAccepted = false
@@ -95,6 +112,12 @@ final class PreviewModel: ObservableObject {
     @Published var confirmHeartbeat = false
     @Published var heartbeating = false
     @Published var heartbeatStatus = "连续心跳未开启"
+    @Published private(set) var heartbeatCount = 0
+    @Published private(set) var lastHeartbeat: Date?
+    var heartbeatSummary: String {
+        guard let lastHeartbeat, heartbeatCount > 0 else { return "尚未收到心跳应答" }
+        return "心跳已应答 \(heartbeatCount) 次 · 最近应答 " + lastHeartbeat.formatted(date: .omitted, time: .standard)
+    }
     @Published var monitoring = false
     @Published var lastStatusCheck = "尚未检查"
     private var monitorTask: Task<Void, Never>?
@@ -163,18 +186,18 @@ final class PreviewModel: ObservableObject {
         deviceRecord = nil
         ready = false
         password = ""
-        verificationCode = ""
-        showVerificationCode = false
         connectionState = .notLoggedIn
         authenticationStatus = "未提交"
         deviceStatus = "未查询"
-        detail = "服务器已更改，请重新检查。"
+        heartbeatCount = 0
+        lastHeartbeat = nil
+        detail = "请先检查服务器。"
     }
     func checkServer() {
         guard !isBusy else { return }
         let address = server.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else {
-            showSettings = true
+            openSettings()
             connectionState = .notLoggedIn
             detail = "先填写公司的认证服务器地址，再检查设备记录。"
             return
@@ -319,6 +342,8 @@ final class PreviewModel: ObservableObject {
         heartbeatGeneration = generation
         let connection = makeHeartbeat()
         roleChangeStatus = ""
+        heartbeatCount = 0
+        lastHeartbeat = nil
         connectionState = .connecting
         heartbeatStatus = "正在连接，等待首次心跳应答…"
         detail = "账号认证已受理，正在建立心跳连接。"
@@ -329,6 +354,8 @@ final class PreviewModel: ObservableObject {
                     onAcknowledgement: { [weak self] count in
                         guard let self, self.heartbeatGeneration == generation, count > 0 else { return }
                         self.connectionState = .connected
+                        self.heartbeatCount = count
+                        self.lastHeartbeat = Date()
                         self.heartbeatStatus = "心跳已应答 \(count) 次 · \(Date().formatted(date: .omitted, time: .standard))"
                         if count == 1 { self.detail = "账号认证已受理，心跳连接已建立。" }
                     }, onRoleChanged: { [weak self] in
@@ -399,8 +426,7 @@ final class PreviewModel: ObservableObject {
         stopMonitoring()
         password = ""
         let submittedAccount = account
-        let code = showVerificationCode ? verificationCode : ""
-        verificationCode = ""
+        let code = ""
         isBusy = true
         loggingIn = true
         connectionState = .authenticating
