@@ -21,6 +21,8 @@ final class HeartbeatProbe {
         let payloadBytes: Int
         let numericResults: String
     }
+    private let diagnostics: DiagnosticLog
+    init(diagnostics: DiagnosticLog = .shared) { self.diagnostics = diagnostics }
     private var activeID: UUID?
     private var connection: NWConnection?
     private var continuation: CheckedContinuation<Reply, Error>?
@@ -39,6 +41,15 @@ final class HeartbeatProbe {
     private var sentAt = ContinuousClock.now
     private var phase = "连接中"
     private var networkError = ""
+    private var networkCode = 0
+    private static func code(_ error: NWError) -> Int {
+        switch error {
+        case .posix(let value): return Int(value.rawValue)
+        case .dns(let value): return Int(value)
+        case .tls(let value): return Int(value)
+        default: return 0
+        }
+    }
 
     func run(host: String, port: UInt16, deviceID: String, timeoutSeconds: Double = 10,
              intervalSeconds: Double = 30, maximumHeartbeats: Int? = 1,
@@ -55,6 +66,8 @@ final class HeartbeatProbe {
         self.startedAt = .now
         self.phase = "连接中"
         self.networkError = ""
+        self.networkCode = 0
+        self.diagnostics.record(.heartbeatStarted, [.mode: maximumHeartbeats == 1 ? "single" : "continuous"])
         self.maximumHeartbeats = maximumHeartbeats
         self.intervalSeconds = intervalSeconds
         self.timeoutSeconds = timeoutSeconds
@@ -73,11 +86,13 @@ final class HeartbeatProbe {
                         guard let self, self.activeID == id else { return }
                         switch state {
                         case .ready:
+                            self.diagnostics.record(.tcpReady)
                             self.receive(id)
                             self.send(id)
                         case .failed(let error):
-                            self.networkError = String(describing: error)
-                            self.finish(id, .failure(Failure(message: "TCP 连接失败，未确认心跳")))
+                            self.networkCode = Self.code(error)
+                    self.networkError = String(describing: error)
+                            self.finish(id, .failure(Failure(message: "TCP 连接失败，未确认心跳")), reason: "connect_failed")
                         case .cancelled:
                             self.finish(id, .failure(CancellationError()))
                         default: break
@@ -86,7 +101,7 @@ final class HeartbeatProbe {
                 }
                 deadline = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(timeoutSeconds)) } catch { return }
-                    self?.finish(id, .failure(Failure(message: "等待匹配心跳响应超时；不能判定本应用已接管连接")))
+                    self?.finish(id, .failure(Failure(message: "等待匹配心跳响应超时；不能判定本应用已接管连接")), reason: "timeout")
                 }
                 connection.start(queue: .main)
             }
@@ -101,19 +116,21 @@ final class HeartbeatProbe {
         expectedSerial = serial
         sentAt = .now
         phase = count == 0 ? "首次应答" : "后续应答"
+        self.diagnostics.record(.heartbeatSent, [.count: String(count), .sequence: String(serial)])
         do {
             let frame = try HeartbeatMessage.frame(deviceID: deviceID, requestClientType: "mobile", serial: serial)
             deadline?.cancel()
             deadline = Task { [weak self] in
                 guard let delay = self?.timeoutSeconds else { return }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                self?.finish(id, .failure(Failure(message: "心跳应答超时，连接已停止；不会自动重连或重登")))
+                self?.finish(id, .failure(Failure(message: "心跳应答超时，连接已停止；不会自动重连或重登")), reason: "timeout")
             }
             connection.send(content: frame, completion: .contentProcessed { [weak self] error in
                 if let error { Task { @MainActor in
                     guard let self, self.activeID == id else { return }
+                    self.networkCode = Self.code(error)
                     self.networkError = String(describing: error)
-                    self.finish(id, .failure(Failure(message: "心跳发送失败")))
+                    self.finish(id, .failure(Failure(message: "心跳发送失败")), reason: "send_failed")
                 } }
             })
         } catch { finish(id, .failure(error)) }
@@ -131,6 +148,7 @@ final class HeartbeatProbe {
                         // original handler refreshes configuration and requests policies.
                         // Inspect every frame, including coalesced notifications and replies.
                         for other in messages where other.trade != "HeartTest" {
+                            self.diagnostics.record(.serverMessage, [.trade: other.trade])
                             if self.onRoleChanged != nil, other.trade == "RoleChanged",
                                HeartbeatAcknowledgement.isRoleChangedNotification(other.content) {
                                 self.onRoleChanged?()
@@ -139,18 +157,20 @@ final class HeartbeatProbe {
                             let safeName = other.trade.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 }) ? other.trade : "未识别"
                             let xmlTrade = HeartbeatAcknowledgement.tradeCode(other.content) ?? "未识别"
                             let controls = HeartbeatAcknowledgement.safeControlSummary(other.content)
-                            self.finish(id, .failure(Failure(message: "收到非心跳消息：交易=\(safeName)，XML交易=\(xmlTrade)，序号=\(other.header.field52)，负载=\(other.content.count)字节；\(controls)。已停止试验连接，请保留原客户端处理")))
+                            self.finish(id, .failure(Failure(message: "收到非心跳消息：交易=\(safeName)，XML交易=\(xmlTrade)，序号=\(other.header.field52)，负载=\(other.content.count)字节；\(controls)。已停止试验连接，请保留原客户端处理")), reason: "unsupported_message")
                             return
                         }
                         if let serial = self.expectedSerial,
                            let match = messages.first(where: { $0.trade == "HeartTest" && $0.header.field52 == serial }) {
                             guard HeartbeatAcknowledgement.valid(match.content) else {
-                                self.finish(id, .failure(Failure(message: "心跳响应 XML 不符合已确认的协议，连接已停止")))
+                                self.finish(id, .failure(Failure(message: "心跳响应 XML 不符合已确认的协议，连接已停止")), reason: "invalid_xml")
                                 return
                             }
                             self.deadline?.cancel()
                             self.expectedSerial = nil
                             self.count += 1
+                            let latency = self.sentAt.duration(to: .now).components
+                            self.diagnostics.record(.heartbeatAcknowledged, [.count: String(self.count), .sequence: String(serial), .latency: String(Double(latency.seconds) + Double(latency.attoseconds) / 1e18)])
                             self.phase = "等待下次心跳"
                             self.onAcknowledgement?(self.count)
                             if let limit = self.maximumHeartbeats, self.count >= limit {
@@ -168,11 +188,14 @@ final class HeartbeatProbe {
                         }
                     }
                     if complete || error != nil {
-                        if let error { self.networkError = String(describing: error) }
-                        self.finish(id, .failure(Failure(message: error == nil ? "服务器关闭了 TCP 连接" : "TCP 接收失败")))
+                        if let error {
+                            self.networkCode = Self.code(error)
+                            self.networkError = String(describing: error)
+                        }
+                        self.finish(id, .failure(Failure(message: error == nil ? "服务器关闭了 TCP 连接" : "TCP 接收失败")), reason: error == nil ? "remote_closed" : "receive_failed")
                     } else { self.receive(id) }
                 } catch {
-                    self.finish(id, .failure(Failure(message: "响应帧校验或解压失败；未执行服务器返回的任何指令")))
+                    self.finish(id, .failure(Failure(message: "响应帧校验或解压失败；未执行服务器返回的任何指令")), reason: "frame_error")
                 }
             }
         }
@@ -192,8 +215,14 @@ final class HeartbeatProbe {
         return values.isEmpty ? "未识别到结果码" : values.joined(separator: ", ")
     }
 
-    private func finish(_ id: UUID, _ result: Result<Reply, Error>) {
+    private func finish(_ id: UUID, _ result: Result<Reply, Error>, reason: String = "failure") {
         guard activeID == id else { return }
+        let duration = startedAt.duration(to: .now).components
+        var fields: [DiagnosticLog.Field: String] = [.count: String(count), .phase: phase, .elapsed: String(Double(duration.seconds) + Double(duration.attoseconds) / 1e18), .reason: reason]
+        if networkCode != 0 { fields[.errorCode] = String(networkCode) }
+        if case .success = result { fields[.reason] = "completed" }
+        if case .failure(let error) = result, error is CancellationError { fields[.reason] = "cancelled" }
+        self.diagnostics.record(.heartbeatFinished, fields)
         var reported = result
         if case .failure(let failure as Failure) = result {
             let components = startedAt.duration(to: .now).components

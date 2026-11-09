@@ -30,9 +30,11 @@ struct NACPreviewApp: App {
 
 @MainActor
 final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
+    private let diagnostics = EnvironmentDiagnostics()
     static let reopenConsole = Notification.Name("NACPreview.reopenConsole")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        diagnostics.start()
         NSApplication.shared.applicationIconImage = NSImage(size: NSSize(width: 128, height: 128), flipped: false) { rect in
             NSColor.systemBlue.setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 4, dy: 4), xRadius: 26, yRadius: 26).fill()
@@ -43,6 +45,8 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
     }
+
+    func applicationWillTerminate(_ notification: Notification) { diagnostics.stop() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
@@ -120,43 +124,88 @@ struct MenuPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 7))
-                    .foregroundStyle(model.connectionState.tint)
-                    .padding(.top, 6)
-                VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 16) {
+                HStack(spacing: 9) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 7))
+                        .foregroundStyle(model.connectionState.tint)
                     Text(model.status).font(.headline)
-                    if !model.account.isEmpty {
-                        Text(model.account).font(.callout).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 5) {
+                    Text(model.account.isEmpty ? "未登录账号" : model.account)
+                        .font(.callout)
+                        .lineLimit(1).truncationMode(.middle)
                     if let last = model.lastHeartbeat, model.heartbeatCount > 0 {
-                        Text("心跳 \(model.heartbeatCount) 次 · 最近 \(last.formatted(date: .omitted, time: .standard))")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text("心跳 \(model.heartbeatCount) 次")
+                        Text("最近 \(last.formatted(date: .omitted, time: .standard))")
                     } else {
-                        Text(model.connectionHint).font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text("尚无心跳应答")
                     }
                 }
-                Spacer(minLength: 0)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
             }
 
             Divider()
 
-            Button {
-                NSApplication.shared.setActivationPolicy(.regular)
-                openWindow(id: "main")
-                NSApplication.shared.activate(ignoringOtherApps: true)
-            } label: {
-                Text("打开窗口")
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("IP 地址").foregroundStyle(.secondary)
+                    Spacer()
+                    Button { model.refreshLocalDeviceInfo() } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("刷新本机 IP")
+                    .accessibilityLabel("刷新本机 IP")
+                }
+                ForEach(model.localDevice.physicalAddresses) { address in
+                    ipRow("\(address.kind) \(address.interface)", value: address.ip)
+                }
+                if model.localDevice.physicalAddresses.isEmpty {
+                    Text("未获取到本机 IPv4").foregroundStyle(.secondary)
+                }
+                ipRow("登记 IP", value: model.deviceRecord?.ip ?? "")
+                    .help("来自最近一次服务器设备检查，可能与当前本机 IP 不同")
             }
+            .font(.caption)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button { relogin() } label: {
+                    Label("重新登录", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                }
+                .disabled(model.isBusy || model.connectionState == .connecting)
+                Button { openConsole() } label: {
+                    Label("打开窗口", systemImage: "arrow.up.right.square")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                }
+            }
+            .font(.callout)
             .buttonStyle(.plain)
+
+            Divider()
+
+            HStack(spacing: 12) {
+                Button("打开日志") { model.openLogs() }
+                Button("清除日志") { model.confirmClearLogs = true }
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .buttonStyle(.borderless)
+            if !model.logNotice.isEmpty {
+                Text(model.logNotice).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Text(AppMetadata.version)
@@ -171,6 +220,47 @@ struct MenuPanel: View {
         .padding(16)
         .preferredColorScheme(.dark)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { model.refreshLocalDeviceInfo() }
+        .alert("清除诊断日志？", isPresented: $model.confirmClearLogs) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) { model.clearLogs() }
+        } message: {
+            Text("清除已保存的日志，不会中断连接。后续事件会继续记录。")
+        }
+    }
+
+    private func openConsole() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func relogin() {
+        guard !model.isBusy, model.connectionState != .connecting else { return }
+        model.editingCredentials = true
+        openConsole()
+        if model.server.isEmpty { model.openSettings() }
+    }
+
+    private func ipRow(_ label: String, value: String) -> some View {
+        let address = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return HStack(spacing: 8) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(address.isEmpty ? "未获取" : address)
+                .monospacedDigit()
+                .textSelection(.enabled)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(address, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .disabled(address.isEmpty)
+            .help("复制\(label)")
+            .accessibilityLabel("复制\(label)")
+        }
     }
 }
 
@@ -217,20 +307,14 @@ struct ConsoleView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("重新登录") {
-                            if model.hasSavedPassword || !model.password.isEmpty { model.confirmLogin = true }
-                            else { model.editingCredentials = true }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.isBusy)
-                        Button("编辑账号") { model.editingCredentials = true }
-                            .disabled(model.isBusy)
+                        Button("重新登录") { model.editingCredentials = true }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isBusy || model.connectionState == .connecting)
                         Spacer()
-                        Button(model.heartbeating ? "停止连接" : "重新连接") {
-                            if model.heartbeating { model.stopHeartbeat() }
-                            else { model.startHeartbeat() }
+                        if !model.heartbeating {
+                            Button("重新连接") { model.startHeartbeat() }
+                                .disabled(!model.canStartHeartbeat)
                         }
-                        .disabled(!model.heartbeating && !model.canStartHeartbeat)
                     }
                 } else {
                 Label("账号登录", systemImage: "person.crop.circle")
@@ -267,7 +351,7 @@ struct ConsoleView: View {
                 Button {
                     model.confirmLogin = true
                 } label: {
-                    Text(model.authenticationAccepted ? "重新登录" : "登录")
+                    Text("登录")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
@@ -305,6 +389,8 @@ struct ConsoleView: View {
                             .disabled(!model.ready || model.isBusy)
                         Button("单次心跳验证…") { model.confirmHeartbeat = true }
                             .disabled(!model.ready || model.isBusy || model.heartbeating)
+                        Button("停止心跳") { model.stopHeartbeat() }
+                            .disabled(!model.heartbeating || model.isBusy)
                     }
                     Text("状态更新时间：\(model.lastStatusCheck) · 状态监测仅查询服务器记录")
                         .font(.caption).foregroundStyle(.secondary)

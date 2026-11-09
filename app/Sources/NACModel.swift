@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Combine
 
 enum ConnectionState: Equatable {
@@ -87,11 +88,28 @@ final class PreviewModel: ObservableObject {
         showDeviceInfo = true
     }
     func refreshLocalDeviceInfo() { localDevice = .read() }
+    @Published var confirmClearLogs = false
+    @Published var logNotice = ""
+    func openLogs() {
+        do {
+            try DiagnosticLog.shared.prepareForViewing()
+            if NSWorkspace.shared.open(DiagnosticLog.shared.directory) { logNotice = "" }
+            else { logNotice = "无法打开日志目录。" }
+        } catch { logNotice = "日志目录不可用，请检查本机权限。" }
+    }
+    func clearLogs() {
+        do { try DiagnosticLog.shared.clear(); logNotice = "已清除日志。" }
+        catch { logNotice = "清除失败，请检查日志目录权限。" }
+    }
     @Published var confirmLogin = false
     @Published var editingCredentials = false
     @Published var isBusy = false
     @Published var ready = false
-    @Published private(set) var connectionState: ConnectionState = .notLoggedIn
+    @Published private(set) var connectionState: ConnectionState = .notLoggedIn {
+        didSet {
+            if connectionState != oldValue { DiagnosticLog.shared.record(.connectionState, [.state: String(describing: connectionState)]) }
+        }
+    }
     var status: String { connectionState.title }
     @Published private(set) var authenticationAccepted = false
     var canStartHeartbeat: Bool { ready && authenticationAccepted && !isBusy && !heartbeating }
@@ -422,6 +440,7 @@ final class PreviewModel: ObservableObject {
         } catch { credentialNotice = error.localizedDescription; return }
         let savePassword = rememberPassword
         let scope = credentialServer
+        DiagnosticLog.shared.record(.loginRequested)
         resetLogin()
         stopHeartbeat()
         stopMonitoring()
@@ -445,6 +464,7 @@ final class PreviewModel: ObservableObject {
             do {
                 let result = try await client.login(account: submittedAccount, password: submittedPassword, verificationCode: code)
                 guard !Task.isCancelled, loginGeneration == generation, service === client else { return }
+                DiagnosticLog.shared.record(.loginResult, [.reason: result.requiresFurtherAction ? "needs_action" : "accepted"])
                 authenticationStatus = result.requiresFurtherAction ? "受理，待后续" : "已受理"
                 detail = result.message
                 isBusy = false
@@ -473,6 +493,7 @@ final class PreviewModel: ObservableObject {
             } catch {
                 guard !Task.isCancelled, loginGeneration == generation, service === client else { return }
                 connectionState = .notLoggedIn
+                DiagnosticLog.shared.record(.loginResult, [.reason: "auth_failed"])
                 authenticationStatus = "未完成"
                 fail(error)
             }

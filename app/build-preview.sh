@@ -11,7 +11,7 @@ xcrun swiftc \
   -parse-as-library \
   -target "$(uname -m)-apple-macosx15.0" \
   -module-cache-path /private/tmp/nac-swift-module-cache \
-  "$APP_DIR/app/Sources/NACPreview.swift" \
+  "$APP_DIR/app/Sources/NACPreview.swift" "$APP_DIR/app/Sources/EnvironmentDiagnostics.swift" \
   "$APP_DIR/app/Sources/NACService.swift" \
   "$APP_DIR/app/Sources/NACModel.swift" "$APP_DIR/app/Sources/PasswordStore.swift" "$APP_DIR/app/Sources/LocalDeviceInformation.swift" \
   "$APP_DIR/app/Sources/HeartbeatProbe.swift" \
@@ -34,7 +34,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.12.0</string>
+    <string>0.13.5</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

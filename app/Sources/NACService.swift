@@ -56,19 +56,32 @@ final class NACService: NACClient {
             cacheMilliseconds: Int64(Date().timeIntervalSince1970 * 1000), serialNumber: serial, webToken: token)
     }
     private func fetch(_ request: URLRequest, secrets: [String] = []) async throws -> [String: Any] {
+        let rawStage = request.url?.path.components(separatedBy: "/json/").last ?? ""
+        let stageName = ["auth/config", "auth/index", "device/infoprocess", "device/netStatus"].contains(rawStage) ? rawStage : "configuration"
+        let started = ContinuousClock.now
+        var logFields: [DiagnosticLog.Field: String] = [.stage: stageName]
+        DiagnosticLog.shared.record(.requestStarted, logFields)
+        defer {
+            let duration = started.duration(to: .now).components
+            logFields[.elapsed] = String(Double(duration.seconds) + Double(duration.attoseconds) / 1e18)
+            DiagnosticLog.shared.record(.requestFinished, logFields)
+        }
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
         catch let error as URLError {
+            logFields[.errorCode] = String(error.code.rawValue)
             throw Failure(message: "\(RequestFailureSummary.stage(request))：网络请求失败（URLError \(error.code.rawValue)）")
         }
         let stage = RequestFailureSummary.stage(request)
         guard data.count <= 2_000_000, let http = response as? HTTPURLResponse else { throw Failure(message: "\(stage)：响应超限或格式异常") }
+        logFields[.httpStatus] = String(http.statusCode)
         let json: [String: Any]
         do {
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure(message: "invalid JSON") }
             json = object
         } catch { throw Failure(message: "\(stage)：服务器未返回有效 JSON（HTTP \(http.statusCode)）") }
+        if let code = json["errcode"] { logFields[.serverCode] = Self.scalar(code) }
         if request.url?.path.hasPrefix("/access/") == true && json["errcode"] == nil {
             throw Failure(message: "\(stage)：响应缺少结果码（HTTP \(http.statusCode)）")
         }

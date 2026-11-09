@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT="$ROOT/local/NAC 小助手-0.12.0.app"
+OUTPUT="$ROOT/local/NAC 小助手-0.13.5.app"
 STAGE="$(mktemp -d "${TMPDIR:-/private/tmp}/nac-package.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 BUNDLE="$STAGE/NAC 小助手.app"
@@ -9,7 +9,7 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 xcrun swiftc -O -parse-as-library \
   -target "$(uname -m)-apple-macosx15.0" \
   -module-cache-path /private/tmp/nac-swift-module-cache \
-  "$ROOT/app/Sources/NACPreview.swift" \
+  "$ROOT/app/Sources/NACPreview.swift" "$ROOT/app/Sources/EnvironmentDiagnostics.swift" \
   "$ROOT/app/Sources/NACService.swift" \
   "$ROOT/app/Sources/NACModel.swift" "$ROOT/app/Sources/PasswordStore.swift" "$ROOT/app/Sources/LocalDeviceInformation.swift" \
   "$ROOT/app/Sources/HeartbeatProbe.swift" \
@@ -28,8 +28,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>NAC 小助手</string>
 <key>CFBundleDisplayName</key><string>NAC 小助手</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.12.0</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>0.13.5</string>
+<key>CFBundleVersion</key><string>16</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
