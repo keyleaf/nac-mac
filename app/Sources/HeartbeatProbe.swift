@@ -14,6 +14,7 @@ protocol ContinuousHeartbeatSession: AnyObject {
 final class HeartbeatProbe {
     struct Failure: LocalizedError {
         let message: String
+        var allowsReconnect = false
         var errorDescription: String? { message }
     }
     struct Reply {
@@ -123,7 +124,7 @@ final class HeartbeatProbe {
             deadline = Task { [weak self] in
                 guard let delay = self?.timeoutSeconds else { return }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                self?.finish(id, .failure(Failure(message: "心跳应答超时，连接已停止；不会自动重连或重登")), reason: "timeout")
+                self?.finish(id, .failure(Failure(message: "心跳应答超时，连接已关闭")), reason: "timeout")
             }
             connection.send(content: frame, completion: .contentProcessed { [weak self] error in
                 if let error { Task { @MainActor in
@@ -228,7 +229,8 @@ final class HeartbeatProbe {
             let components = startedAt.duration(to: .now).components
             let elapsed = Double(components.seconds) + Double(components.attoseconds) / 1e18
             let transport = networkError.isEmpty ? "" : "；网络：\(networkError)"
-            reported = .failure(Failure(message: "\(failure.message)（已应答 \(count) 次，运行 \(String(format: "%.1f", elapsed)) 秒，阶段：\(phase)\(transport)）"))
+            let allowsReconnect = ["connect_failed", "timeout", "send_failed", "remote_closed", "receive_failed"].contains(reason)
+            reported = .failure(Failure(message: "\(failure.message)（已应答 \(count) 次，运行 \(String(format: "%.1f", elapsed)) 秒，阶段：\(phase)\(transport)）", allowsReconnect: allowsReconnect))
         }
         activeID = nil
         let pending = continuation

@@ -9,11 +9,33 @@ final class FakeNACClient: NACClient {
     var loginPending: CheckedContinuation<NACService.LoginResult, Error>?
     var loginRequests = 0
     var roleError = false
+    var waitForPreparation = true
+    var lookupRequests = 0
+    var lookupResult: NACService.Device? = .init(id: "synthetic", recordedOS: "macOS", registered: "1")
+    var suspendLookup = false
+    var lookupPending: CheckedContinuation<NACService.Device?, Never>?
     init(_ server: String) { origin = URL(string: server)! }
-    func prepare() async throws -> NACService.Device {
+    func discoverDesktop() async throws -> DeviceRegistrationState {
         let result = try await withCheckedThrowingContinuation { pending = $0 }
+        return .parse(response: nil, recorded: result.registered)
+    }
+    func prepare() async throws -> NACService.Device {
+        let result: NACService.Device
+        if waitForPreparation {
+            result = try await withCheckedThrowingContinuation { pending = $0 }
+        } else {
+            guard let current = try await verifyDeviceForReconnect() else {
+                throw NACService.Failure(message: "synthetic lookup failed")
+            }
+            result = current
+        }
         device = result
         return result
+    }
+    func verifyDeviceForReconnect() async throws -> NACService.Device? {
+        lookupRequests += 1
+        if suspendLookup { return await withCheckedContinuation { lookupPending = $0 } }
+        return lookupResult
     }
     func status() async throws -> String { "设备在线（测试）" }
     func login(account: String, password: String, verificationCode: String) async throws -> NACService.LoginResult {
@@ -50,9 +72,9 @@ final class FakeHeartbeatSession: ContinuousHeartbeatSession {
         roleChanged = onRoleChanged
         try await withCheckedThrowingContinuation { pending = $0 }
     }
-    func fail() {
+    func fail(retryable: Bool = false) {
         let continuation = pending; pending = nil
-        continuation?.resume(throwing: HeartbeatProbe.Failure(message: "synthetic remote close"))
+        continuation?.resume(throwing: HeartbeatProbe.Failure(message: "synthetic remote close", allowsReconnect: retryable))
     }
 }
 
@@ -94,10 +116,11 @@ struct NACModelCheck {
         await until { clients.count == 2 && clients[1].pending != nil }
         clients[1].succeed()
         await until { !model.checkingServer }
-        precondition(model.ready && !model.isBusy && model.deviceStatus.contains("在线"))
-        precondition(model.deviceRecord?.id == "synthetic")
+        precondition(!model.ready && !model.isBusy && model.deviceStatus == "已登记")
+        precondition(model.deviceRecord == nil && clients[1].device == nil && clients[1].loginRequests == 0)
+        precondition(model.detail.contains("AgentID"))
         model.openDeviceInfo()
-        precondition(model.showDeviceInfo && model.ready && model.localDevice.system.hasPrefix("macOS "))
+        precondition(model.showDeviceInfo && model.localDevice.system.hasPrefix("macOS "))
         precondition(PreviewModel(preferences: preferences).server == "http://192.0.2.10")
         precondition(Set(preferences.persistentDomain(forName: suite)!.keys) == Set(["serverOrigin"]))
 
@@ -114,7 +137,7 @@ struct NACModelCheck {
         precondition(model.checkingServer && model.isBusy && !model.ready)
         clients[3].succeed()
         await until { !model.checkingServer }
-        precondition(model.ready && !model.isBusy)
+        precondition(!model.ready && !model.isBusy && model.deviceStatus == "已登记")
         precondition(PreviewModel(preferences: preferences).server == "http://192.0.2.11")
 
         // Changing the address invalidates the old ready state and an in-flight request.
@@ -125,7 +148,7 @@ struct NACModelCheck {
         clients[4].succeed()
         for _ in 0..<20 { await Task.yield() }
         precondition(!model.ready && model.server == "http://192.0.2.12")
-        // A server's online record alone must never mark this app connected.
+        // Desktop diagnostics must not create an authenticated session.
         let authClient = FakeNACClient("http://192.0.2.20")
         var sessions: [FakeHeartbeatSession] = []
         let loginModel = PreviewModel(preferences: preferences, makeClient: { _ in authClient }, makeHeartbeat: {
@@ -136,15 +159,16 @@ struct NACModelCheck {
         await until { authClient.pending != nil }
         authClient.succeed()
         await until { !loginModel.checkingServer }
-        precondition(loginModel.connectionState == .notLoggedIn && loginModel.deviceStatus.contains("在线"))
+        precondition(loginModel.connectionState == .notLoggedIn && loginModel.deviceStatus == "已登记" && authClient.loginRequests == 0)
         loginModel.startHeartbeat()
         precondition(sessions.isEmpty)
+        authClient.waitForPreparation = false
         loginModel.account = "synthetic"
 
         // MFA/approval/registration follow-up and failed authentication must not start transport.
         loginModel.password = "synthetic-only"
         loginModel.submitLogin()
-        precondition(loginModel.connectionState == .authenticating && loginModel.password.isEmpty)
+        precondition(loginModel.connectionState == .checking && loginModel.password.isEmpty)
         await until { authClient.loginPending != nil }
         authClient.completeLogin(needsAction: true)
         await until { !loginModel.isBusy }
@@ -183,7 +207,7 @@ struct NACModelCheck {
         for _ in 0..<20 { await Task.yield() }
         precondition(loginModel.connectionState == .stopped && loginModel.heartbeatCount == 1)
 
-        // Manual reconnect reuses accepted authentication; remote close stops, without retry loops.
+        // Manual reconnect verifies the device before reusing accepted authentication.
         loginModel.startHeartbeat()
         await until { sessions.count == 2 && sessions[1].pending != nil }
         precondition(loginModel.heartbeatCount == 0 && loginModel.lastHeartbeat == nil)
@@ -221,13 +245,10 @@ struct NACModelCheck {
         model.serverDraft = "http://192.0.2.30"
         precondition(model.server == "http://192.0.2.12")
         model.saveServerSettings()
-        precondition(!model.showSettings && model.checkingServer)
-        await until { clients.count == previousChecks + 1 && clients.last?.pending != nil }
-        clients.last!.succeed()
-        await until { !model.checkingServer }
-        precondition(model.ready && model.server == "http://192.0.2.30")
+        precondition(!model.showSettings && !model.checkingServer && !model.ready)
+        precondition(clients.count == previousChecks && model.server == "http://192.0.2.30")
         precondition(preferences.string(forKey: "serverOrigin") == "http://192.0.2.30")
-        print("PASS: draft editing preserves live connection, invalid save rejected, valid save checks automatically, heartbeat count/time retain and reset")
+        print("PASS: draft editing preserves live connection, invalid save rejected, valid save preserves address without discovery, heartbeat count/time retain and reset")
 
         let memory = MemoryPasswordStore()
         let savedClient = FakeNACClient("http://192.0.2.20")
@@ -235,9 +256,7 @@ struct NACModelCheck {
             makeHeartbeat: { FakeHeartbeatSession() }, passwordStore: memory)
         savedModel.server = "http://192.0.2.20"
         savedClient.heartbeatPort = nil // No transport needed to test credential handling.
-        savedModel.checkServer()
-        await until { savedClient.pending != nil }; savedClient.succeed()
-        await until { !savedModel.isBusy }
+        savedClient.waitForPreparation = false
         savedModel.account = "synthetic"; savedModel.password = "synthetic-only"; savedModel.rememberPassword = true
         savedModel.submitLogin()
         await until { savedClient.loginPending != nil }; savedClient.failLogin()
@@ -259,6 +278,63 @@ struct NACModelCheck {
         precondition(!(preferences.persistentDomain(forName: suite) ?? [:]).values.contains { ($0 as? String) == "synthetic-only" })
         print("PASS: failed login not saved, opt-in persistence, explicit re-login from store, restoration without plaintext and deletion")
         print("PASS: login follow-up and failures blocked, automatic single heartbeat, ACK-only connected state, stop/reconnect/remote close, stale login isolation")
+        // A user can log in without a separate check. Retryable errors are bounded,
+        // and stale device lookups cannot restart a logged-out session.
+        let retryClient = FakeNACClient("http://192.0.2.20")
+        retryClient.waitForPreparation = false
+        var retrySessions: [FakeHeartbeatSession] = []
+        let retryModel = PreviewModel(preferences: preferences, makeClient: { _ in retryClient },
+            makeHeartbeat: {
+                let session = FakeHeartbeatSession()
+                retrySessions.append(session)
+                return session
+            }, passwordStore: memory, reconnectDelays: [.zero, .zero, .zero])
+        retryModel.server = "http://192.0.2.20"
+        retryModel.account = "synthetic"
+        retryModel.password = "synthetic-only"
+        retryModel.submitLogin()
+        await until { retryClient.loginPending != nil }
+        precondition(retryClient.lookupRequests == 1)
+        retryClient.completeLogin()
+        for index in 0..<4 {
+            await until { retrySessions.count == index + 1 && retrySessions[index].pending != nil }
+            retrySessions[index].fail(retryable: true)
+        }
+        await until { !retryModel.heartbeating && !retryModel.reconnecting }
+        precondition(retryClient.loginRequests == 1 && retryClient.lookupRequests == 4)
+        precondition(retryModel.connectionState == .interrupted && retryModel.canStartHeartbeat)
+
+        retryClient.suspendLookup = true
+        retryModel.startHeartbeat()
+        await until { retryClient.lookupPending != nil }
+        retryModel.stopHeartbeat()
+        let stoppedLookup = retryClient.lookupPending
+        retryClient.lookupPending = nil
+        stoppedLookup?.resume(returning: retryClient.lookupResult)
+        for _ in 0..<20 { await Task.yield() }
+        precondition(retrySessions.count == 4 && retryModel.connectionState == .stopped)
+
+        retryModel.startHeartbeat()
+        await until { retryClient.lookupPending != nil }
+        retryModel.logout()
+        let staleLookup = retryClient.lookupPending
+        retryClient.lookupPending = nil
+        staleLookup?.resume(returning: retryClient.lookupResult)
+        for _ in 0..<20 { await Task.yield() }
+        precondition(retrySessions.count == 4 && retryModel.connectionState == .notLoggedIn)
+        precondition(!retryModel.authenticationAccepted && !retryModel.reconnecting && retryModel.deviceRecord == nil)
+
+        retryClient.suspendLookup = false
+        retryModel.password = "synthetic-only"
+        retryModel.submitLogin()
+        await until { retryClient.loginPending != nil }
+        retryClient.completeLogin()
+        await until { retrySessions.count == 5 && retrySessions[4].pending != nil }
+        retryClient.lookupResult = .init(id: "different", recordedOS: "macOS", registered: "1")
+        retrySessions[4].fail(retryable: true)
+        await until { retryModel.connectionState == .needsAction }
+        precondition(retrySessions.count == 5 && retryClient.loginRequests == 2 && !retryModel.authenticationAccepted)
+        print("PASS: login preflight, bounded device-verified reconnect, manual stop and logout cancellation, device identity mismatch")
         print("PASS: empty-server guidance, visible failure and retry, server persistence without credentials, cancellation and stale-check isolation")
     }
 }

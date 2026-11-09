@@ -102,6 +102,9 @@ struct StatusLabel: View {
     var body: some View {
         Label("NAC 小助手", systemImage: "network")
             .help(model.status)
+            .onReceive(NotificationCenter.default.publisher(for: EnvironmentDiagnostics.networkAvailability)) { notification in
+                if let available = notification.object as? Bool { model.networkAvailable = available }
+            }
             .onReceive(NotificationCenter.default.publisher(for: PreviewAppDelegate.reopenConsole)) { _ in
                 openWindow(id: "main")
                 NSApplication.shared.setActivationPolicy(.regular)
@@ -280,9 +283,10 @@ struct ConsoleView: View {
                             .controlSize(.small)
                             .disabled(model.isBusy)
                     }
-                    Text(model.server.isEmpty ? "未配置，请先设置" : model.server)
+                    Text(model.serverConfigured ? model.server : "请填写认证服务器地址")
                         .font(.callout)
-                        .foregroundStyle(model.server.isEmpty ? Color.orange : Color.primary)
+                        .fontWeight(model.serverConfigured ? .regular : .semibold)
+                        .foregroundStyle(model.serverConfigured ? Color.primary : Color.orange)
                         .textSelection(.enabled)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -303,13 +307,15 @@ struct ConsoleView: View {
                     Text(model.status)
                         .font(.title2.bold())
                         .foregroundStyle(model.connectionState.tint)
-                    Text(model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint)
+                    Text(!model.reconnecting && model.heartbeatCount > 0 ? model.heartbeatSummary : model.connectionHint)
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button("重新登录") { model.editingCredentials = true }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isBusy || model.connectionState == .connecting)
+                        Button("退出登录") { model.logout() }
+                            .disabled(model.isBusy)
                         Spacer()
                         if !model.heartbeating {
                             Button("重新连接") { model.startHeartbeat() }
@@ -336,18 +342,12 @@ struct ConsoleView: View {
                 if !model.credentialNotice.isEmpty {
                     Text(model.credentialNotice).font(.caption).foregroundStyle(.secondary)
                 }
-                HStack {
-                    Button(model.checkingServer ? "正在检查…" : "检查服务器 / 复用设备记录") { model.checkServer() }
-                        .disabled(model.isBusy)
-                    if model.checkingServer {
-                        ProgressView().controlSize(.small)
-                        Button("取消检查") { model.cancelServerCheck() }
-                    }
+                if model.serverConfigured && !model.detail.isEmpty {
+                    Text(model.detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(model.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 Button {
                     model.confirmLogin = true
                 } label: {
@@ -357,7 +357,7 @@ struct ConsoleView: View {
                         .padding(.vertical, 5)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.ready || model.isBusy || model.account.isEmpty || (model.password.isEmpty && !model.hasSavedPassword))
+                .disabled(!model.canSubmitLogin)
                 if model.authenticationAccepted {
                     Button("返回连接状态") {
                         model.password = ""
@@ -379,18 +379,32 @@ struct ConsoleView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text("账号认证：\(model.authenticationStatus)").font(.caption)
                     HStack {
+                        Button(model.checkingServer ? "正在识别…" : "识别本机设备（桌面试验）…") { model.confirmDeviceDiscovery = true }
+                            .disabled(model.isBusy || model.authenticationAccepted)
+                            .confirmationDialog("识别这台 Mac", isPresented: $model.confirmDeviceDiscovery, titleVisibility: .visible) {
+                                Button("发送一次设备报告") { model.checkServer() }
+                                Button("取消", role: .cancel) {}
+                            } message: {
+                                Text("将向认证服务器提交本机名称、型号、系统、处理器、磁盘容量、网卡地址和硬件标识，可能创建或更新设备记录。这次仅检查设备与登记资料，不提交账号密码。")
+                            }
+                        if model.checkingServer {
+                            ProgressView().controlSize(.small)
+                            Button("取消检查") { model.cancelServerCheck() }
+                        }
+                    }
+                    HStack {
                         Text("设备记录：\(model.deviceStatus)").font(.caption)
                         Spacer()
                         Button("刷新设备状态") { model.refreshStatus() }
-                            .disabled(!model.ready || model.isBusy)
+                            .disabled(!model.ready || model.isBusy || model.reconnecting)
                     }
                     HStack {
                         Button(monitoringTitle) { model.toggleMonitoring() }
-                            .disabled(!model.ready || model.isBusy)
+                            .disabled(!model.ready || model.isBusy || model.reconnecting)
                         Button("单次心跳验证…") { model.confirmHeartbeat = true }
-                            .disabled(!model.ready || model.isBusy || model.heartbeating)
+                            .disabled(!model.ready || model.isBusy || model.heartbeating || model.reconnecting)
                         Button("停止心跳") { model.stopHeartbeat() }
-                            .disabled(!model.heartbeating || model.isBusy)
+                            .disabled(!model.heartbeating && !model.reconnecting)
                     }
                     Text("状态更新时间：\(model.lastStatusCheck) · 状态监测仅查询服务器记录")
                         .font(.caption).foregroundStyle(.secondary)
@@ -423,7 +437,7 @@ struct ConsoleView: View {
                 Text("服务器设置").font(.title2.bold())
                 TextField("认证服务器地址", text: $model.serverDraft)
                     .textFieldStyle(.roundedBorder)
-                Text("保存后自动检查服务器，重启后保留此地址。")
+                Text("保存后会记住服务器地址，登录时再识别本机。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !model.settingsError.isEmpty {
@@ -444,13 +458,13 @@ struct ConsoleView: View {
             Button("取消", role: .cancel) { model.password = "" }
             Button("提交认证") { model.submitLogin() }
         } message: {
-            Text("将向 \(model.server) 提交账号及加密密码，并复用已有设备记录。可能改变现有会话、影响原客户端连接。认证完成后会自动建立心跳连接，关闭窗口仍保持。")
+            Text("将向 \(model.server) 先提交本机名称、型号、系统、处理器、磁盘容量、网卡地址和硬件标识。设备识别可能创建或更新登记记录。确认本机已登记后，提交账号和加密密码。认证通过且无需额外操作时自动建立心跳连接。")
         }
         .confirmationDialog("单次心跳验证", isPresented: $model.confirmHeartbeat, titleVisibility: .visible) {
             Button("建立连接并发送一次心跳") { model.probeHeartbeat() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将向当前服务器的 37527 端口建立独立 TCP 连接，为复用记录发送一次 HeartTest。可能影响原客户端连接。不会更新设备信息或执行服务器策略，收到匹配帧也不等于独立保活已成功。")
+            Text("将向当前服务器的 37527 端口建立独立 TCP 连接，为当前设备记录发送一次 HeartTest。可能影响原客户端连接。不会更新设备信息或执行服务器策略，收到匹配帧也不等于独立保活已成功。")
         }
     }
 
@@ -498,7 +512,7 @@ struct DeviceInformationView: View {
                                 row("登记 MAC", device.mac)
                                 row("部门", device.department)
                                 row("位置", device.location)
-                                Text("来自最近一次设备检查。当前复用已有记录，登记资料可能与这台 Mac 不同。")
+                                Text("来自最近一次 Mac 设备识别。服务器登记地址可能与本机当前地址不同。")
                                     .font(.caption).foregroundStyle(.secondary)
                             } else {
                                 Text("检查服务器后显示对应的设备登记资料。")

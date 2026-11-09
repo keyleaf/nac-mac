@@ -13,7 +13,9 @@ protocol NACClient: AnyObject {
     var origin: URL { get }
     var device: NACService.Device? { get }
     var heartbeatPort: UInt16? { get }
+    func discoverDesktop() async throws -> DeviceRegistrationState
     func prepare() async throws -> NACService.Device
+    func verifyDeviceForReconnect() async throws -> NACService.Device?
     func status() async throws -> String
     func login(account: String, password: String, verificationCode: String) async throws -> NACService.LoginResult
     func refreshAfterRoleChange() async throws -> String
@@ -23,6 +25,7 @@ protocol NACClient: AnyObject {
 final class NACService: NACClient {
     struct Failure: LocalizedError {
         let message: String
+        var requiresLogin = false
         var errorDescription: String? { message }
     }
     typealias Device = DeviceRecord
@@ -34,6 +37,7 @@ final class NACService: NACClient {
     private let session: URLSession
     private var loginKey: SecKey?
     private var token: String?
+    private var reportedAddress: LocalDeviceInformation.NetworkAddress?
     private(set) var device: Device?
     private(set) var heartbeatPort: UInt16?
 
@@ -57,7 +61,7 @@ final class NACService: NACClient {
     }
     private func fetch(_ request: URLRequest, secrets: [String] = []) async throws -> [String: Any] {
         let rawStage = request.url?.path.components(separatedBy: "/json/").last ?? ""
-        let stageName = ["auth/config", "auth/index", "device/infoprocess", "device/netStatus"].contains(rawStage) ? rawStage : "configuration"
+        let stageName = ["auth/config", "auth/index", "device/infoprocess", "device/netStatus", "device/info"].contains(rawStage) ? rawStage : "configuration"
         let started = ContinuousClock.now
         var logFields: [DiagnosticLog.Field: String] = [.stage: stageName]
         DiagnosticLog.shared.record(.requestStarted, logFields)
@@ -76,6 +80,9 @@ final class NACService: NACClient {
         let stage = RequestFailureSummary.stage(request)
         guard data.count <= 2_000_000, let http = response as? HTTPURLResponse else { throw Failure(message: "\(stage)：响应超限或格式异常") }
         logFields[.httpStatus] = String(http.statusCode)
+        if http.statusCode == 401 && rawStage == "device/netStatus" {
+            throw Failure(message: "设备查询需要重新认证（HTTP 401）", requiresLogin: true)
+        }
         let json: [String: Any]
         do {
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure(message: "invalid JSON") }
@@ -105,18 +112,90 @@ final class NACService: NACClient {
         return !value.isEmpty && value != "0" && value != "false" && value != "close"
     }
 
+    func discoverDesktop() async throws -> DeviceRegistrationState {
+        let (record, _) = try await resolveDesktopDevice()
+        return .parse(response: nil, recorded: record.registered)
+    }
+
+    private func resolveDesktopDevice() async throws -> (Device, LocalDeviceInformation.NetworkAddress) {
+        guard let host = origin.host, let address = await LocalDeviceInformation.addressForServer(host),
+              let report = LocalDeviceInformation.report(for: address) else {
+            throw Failure(message: "无法取得通往认证服务器的本机网卡和设备资料。")
+        }
+        try Task.checkCancellation()
+        try await reloadConfiguration()
+        guard heartbeatPort == 37527 else {
+            throw Failure(message: "服务器配置未确认桌面识别端口，设备报告未发送。")
+        }
+        guard await LocalDeviceInformation.addressForServer(host) == address else {
+            throw Failure(message: "网络已变化，设备报告未发送。")
+        }
+
+        let reply: DesktopDeviceDiscovery.Reply
+        do {
+            reply = try await DesktopDeviceDiscoveryProbe().run(
+                host: host, port: 37527, report: report, serial: UInt32.random(in: 1...UInt32(Int32.max)))
+        } catch let error as DesktopDeviceDiscovery.Failure {
+            switch error {
+            case .mismatchedReply: throw Failure(message: "桌面响应的交易或序列号不匹配。")
+            case .invalidXML: throw Failure(message: "桌面响应的 XML 格式异常。")
+            case .invalidAgentID: throw Failure(message: "桌面响应未返回有效 AgentID。")
+            case .mismatchedRecord: throw Failure(message: "桌面响应的设备记录不匹配。")
+            }
+        } catch let error as DesktopDeviceDiscoveryProbe.Failure {
+            throw Failure(message: error.localizedDescription)
+        }
+
+        try Task.checkCancellation()
+        do {
+            let result = try await fetch(reply.registrationQuery(context: context()), secrets: [
+                reply.agentID, report.ip, report.mac, report.hardwareUUID.uuidString, report.name
+            ])
+            try Task.checkCancellation()
+            guard let fields = result["data"] as? [String: Any], !fields.isEmpty else {
+                throw Failure(message: "响应缺少登记资料。")
+            }
+            return (try reply.deviceRecord(from: fields), address)
+        } catch DesktopDeviceDiscovery.Failure.mismatchedRecord {
+            throw Failure(message: "已收到有效 AgentID，但登记记录的设备 ID 与它不匹配。")
+        } catch let error as Failure {
+            throw Failure(message: "已收到有效 AgentID，登记资料查询失败。\(error.message)")
+        }
+    }
+
     func prepare() async throws -> Device {
         token = nil
         device = nil
         loginKey = nil
-        try await reloadConfiguration()
-        let result = try await post("device/infoprocess", [("gettype", "ipgetmac"), ("newMobile", "1"),
-            ("is_guest", "0"), ("wechatid", "0"), ("is_mobile", "0"), ("os_platform", "macOS")])
-        guard let fields = result["data"] as? [String: Any] else { throw Failure(message: "服务器未返回现有设备记录") }
-        let found = Device(fields: fields)
-        guard !found.id.isEmpty, found.id != "0" else { throw Failure(message: "当前 IP 没有可复用的设备记录；未提交新登记") }
-        device = found
-        return found
+        reportedAddress = nil
+        let (found, address) = try await resolveDesktopDevice()
+        try Task.checkCancellation()
+        let registration = DeviceRegistrationState.parse(response: nil, recorded: found.registered)
+        let reason: String
+        switch registration {
+        case .registered:
+            reportedAddress = address
+            device = found
+            return found
+        case .awaitingApproval: reason = "设备登记正在等待审核"
+        case .registrationRequired: reason = "本机尚未登记，请先在官方客户端完成登记"
+        case .reregistrationRequired: reason = "服务器要求重新登记本机，请先在官方客户端核对并处理"
+        case .unknown: reason = "本机登记状态待确认"
+        }
+        throw Failure(message: reason + "。尚未提交账号认证。")
+
+    }
+
+    func verifyDeviceForReconnect() async throws -> Device? {
+        guard let device, let host = origin.host, let reportedAddress,
+              await LocalDeviceInformation.addressForServer(host) == reportedAddress else { return nil }
+        try Task.checkCancellation()
+        // Reconnect reads the existing record by ID. Discovery may write a record,
+        // so it is reserved for explicit login or confirmed diagnostics.
+        let status = try await deviceStatusCode(for: device)
+        guard ["0", "1"].contains(status),
+              await LocalDeviceInformation.addressForServer(host) == reportedAddress else { return nil }
+        return device
     }
 
     // Refresh without resetting the authenticated token or reused device identity.
@@ -146,22 +225,36 @@ final class NACService: NACClient {
 
     func status() async throws -> String {
         guard let device else { throw Failure(message: "请先检查现有设备记录") }
-        let result = try await post("device/netStatus", [("deviceId", device.id)])
-        guard let data = result["data"] as? [String: Any] else { throw Failure(message: "服务器未返回设备状态") }
-        switch Self.scalar(data["deviceStatus"]) {
-        case "1": return "设备在线（复用记录）"
+        switch try await deviceStatusCode(for: device) {
+        case "1": return "设备在线"
         case "0": return "设备未入网"
         default: return "服务器状态待确认"
         }
     }
 
+    private func deviceStatusCode(for device: Device) async throws -> String {
+        let result = try await post("device/netStatus", [("deviceId", device.id)])
+        guard let data = result["data"] as? [String: Any] else { return "" }
+        return Self.scalar(data["deviceStatus"])
+    }
+
     func login(account: String, password: String, verificationCode: String) async throws -> LoginResult {
         guard let device, let loginKey else { throw Failure(message: "请先检查服务器与设备记录") }
+        guard let host = origin.host, let reportedAddress,
+              await LocalDeviceInformation.addressForServer(host) == reportedAddress else {
+            throw Failure(message: "设备识别后网络已变化，请重新登录。")
+        }
+        try Task.checkCancellation()
         // Never retry login automatically: one click means one credential submission.
         let secrets = [account, password, WebBase64.encode(account), WebBase64.encode(password)]
         if try await accountRequiresPasswordChange(account) {
             throw Failure(message: "服务器要求先修改密码，请使用原客户端处理")
         }
+        try Task.checkCancellation()
+        guard await LocalDeviceInformation.addressForServer(host) == reportedAddress else {
+            throw Failure(message: "提交账号前网络已变化，请重新登录。")
+        }
+        try Task.checkCancellation()
         let options = LoginPreparation.Options(hintOver: "0", autoAuth: "0", verificationCode: verificationCode,
             isRecord: "0", isMobile: "0")
         let result = try await fetch(LoginPreparation.loginRequest(account: account, password: password,
@@ -171,16 +264,19 @@ final class NACService: NACClient {
         if Self.scalar(data["pwdCheckResCode"]) == "0" {
             return .init(message: "服务器要求修改密码，请使用原客户端处理，尚未完成入网。", requiresFurtherAction: true)
         }
-        if Self.enabled(data["FactorAuth"]) || Self.enabled(data["BindAuth"]) || Self.enabled(data["IsAgainReg"]) {
-            return .init(message: "服务器要求额外认证、账号绑定或重新登记。请使用原客户端完成，尚未确认入网。", requiresFurtherAction: true)
+        if Self.enabled(data["FactorAuth"]) || Self.enabled(data["BindAuth"]) {
+            return .init(message: "服务器要求额外认证或账号绑定。请使用原客户端完成，尚未确认入网。", requiresFurtherAction: true)
         }
-        let registration = DeviceRegistrationState.parse(
-            response: data["Registered"].map { Self.scalar($0) }, recorded: device.registered)
+        let registration: DeviceRegistrationState = Self.enabled(data["IsAgainReg"])
+            ? .reregistrationRequired
+            : .parse(response: data["Registered"].map { Self.scalar($0) }, recorded: device.registered)
         switch registration {
         case .awaitingApproval:
             return .init(message: "设备登记仍在等待审核；尚未建立连接。", requiresFurtherAction: true)
         case .registrationRequired:
-            return .init(message: "服务器要求完成设备注册或重新登记；请使用原客户端处理。", requiresFurtherAction: true)
+            return .init(message: "服务器要求首次登记这台 Mac。请在官方客户端完成登记。", requiresFurtherAction: true)
+        case .reregistrationRequired:
+            return .init(message: "服务器要求重新登记这台 Mac。若涉及替换设备，请在官方客户端核对后确认。", requiresFurtherAction: true)
         case .unknown:
             return .init(message: "设备登记状态待确认；请重新检查服务器。", requiresFurtherAction: true)
         case .registered: break

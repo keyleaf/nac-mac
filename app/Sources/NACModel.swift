@@ -34,6 +34,12 @@ final class PreviewModel: ObservableObject {
         parts.scheme = parts.scheme?.lowercased(); parts.host = parts.host?.lowercased(); parts.path = ""
         return parts.url?.absoluteString
     }
+    var serverConfigured: Bool { credentialServer != nil }
+    var canSubmitLogin: Bool {
+        serverConfigured && !isBusy
+            && !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!password.isEmpty || hasSavedPassword)
+    }
     var hasSavedPassword: Bool {
         guard rememberPassword, let scope = credentialServer, !account.isEmpty else { return false }
         return preferences.string(forKey: "savedAccount:" + scope) == account
@@ -71,12 +77,10 @@ final class PreviewModel: ObservableObject {
         let address = serverDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             _ = try NACService(server: address)
-            let needsCheck = address != server || !ready
             server = address
             preferences.set(address, forKey: "serverOrigin")
             settingsError = ""
             showSettings = false
-            if needsCheck { checkServer() }
         } catch { settingsError = error.localizedDescription }
     }
     @Published var showDeviceInfo = false
@@ -102,6 +106,7 @@ final class PreviewModel: ObservableObject {
         catch { logNotice = "清除失败，请检查日志目录权限。" }
     }
     @Published var confirmLogin = false
+    @Published var confirmDeviceDiscovery = false
     @Published var editingCredentials = false
     @Published var isBusy = false
     @Published var ready = false
@@ -112,10 +117,13 @@ final class PreviewModel: ObservableObject {
     }
     var status: String { connectionState.title }
     @Published private(set) var authenticationAccepted = false
-    var canStartHeartbeat: Bool { ready && authenticationAccepted && !isBusy && !heartbeating }
+    var canStartHeartbeat: Bool { ready && authenticationAccepted && !isBusy && !heartbeating && !reconnecting }
     var connectionHint: String {
+        if reconnecting {
+            return networkAvailable ? "正在核对设备并尝试重新连接" : "等待网络恢复后重新连接"
+        }
         switch connectionState {
-        case .notLoggedIn: return ready ? "检查完成，可以登录" : "请先检查服务器并登录"
+        case .notLoggedIn: return "请输入账号和密码登录"
         case .checking: return "正在读取配置和设备记录"
         case .authenticating: return "正在验证账号"
         case .needsAction: return "请查看下方认证结果"
@@ -127,7 +135,7 @@ final class PreviewModel: ObservableObject {
     }
     @Published var authenticationStatus = "未提交"
     @Published var deviceStatus = "未查询"
-    @Published var detail = "先检查服务器，将复用当前 IP 的设备记录，不提交新登记。"
+    @Published var detail = ""
     @Published var confirmHeartbeat = false
     @Published var heartbeating = false
     @Published var heartbeatStatus = "连续心跳未开启"
@@ -143,6 +151,11 @@ final class PreviewModel: ObservableObject {
     private let heartbeat = HeartbeatProbe()
     private var heartbeatTask: Task<Void, Never>?
     private var heartbeatGeneration = UUID()
+    @Published private(set) var reconnecting = false
+    @Published var networkAvailable = true
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempt = 0
+    private let reconnectDelays: [Duration]
     private var roleRefreshTask: Task<Void, Never>?
     @Published var roleChangeStatus = ""
     private var service: (any NACClient)?
@@ -159,11 +172,13 @@ final class PreviewModel: ObservableObject {
     init(preferences: UserDefaults = .standard,
          makeClient: @escaping @MainActor (String) throws -> any NACClient = { try NACService(server: $0) },
          makeHeartbeat: @escaping @MainActor () -> any ContinuousHeartbeatSession = { HeartbeatProbe() },
-         passwordStore: (any PasswordStore)? = nil) {
+         passwordStore: (any PasswordStore)? = nil,
+         reconnectDelays: [Duration] = [.seconds(3), .seconds(10), .seconds(30)]) {
         self.passwordStore = passwordStore ?? KeychainPasswordStore()
         self.preferences = preferences
         self.makeClient = makeClient
         self.makeHeartbeat = makeHeartbeat
+        self.reconnectDelays = reconnectDelays
         self.server = preferences.string(forKey: "serverOrigin") ?? ""
         restoreAccount()
     }
@@ -193,7 +208,7 @@ final class PreviewModel: ObservableObject {
         deviceRecord = nil
         deviceStatus = "未查询"
         connectionState = .notLoggedIn
-        detail = "可调整服务器地址后重试。"
+        detail = ""
     }
 
     func invalidate() {
@@ -208,12 +223,20 @@ final class PreviewModel: ObservableObject {
         connectionState = .notLoggedIn
         authenticationStatus = "未提交"
         deviceStatus = "未查询"
+        lastStatusCheck = "尚未检查"
+        roleChangeStatus = ""
         heartbeatCount = 0
         lastHeartbeat = nil
-        detail = "请先检查服务器。"
+        detail = ""
     }
+    func logout() {
+        invalidate()
+        editingCredentials = false
+        confirmLogin = false
+    }
+
     func checkServer() {
-        guard !isBusy else { return }
+        guard !isBusy, !authenticationAccepted else { return }
         let address = server.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else {
             openSettings()
@@ -232,7 +255,7 @@ final class PreviewModel: ObservableObject {
         ready = false
         deviceStatus = "查询中"
         connectionState = .checking
-        detail = "正在读取服务器配置和当前 IP 对应的设备记录…"
+        detail = "正在读取服务器配置并识别本机…"
         authenticationStatus = "未提交"
         let generation = checkGeneration
         checkTask = Task {
@@ -247,23 +270,18 @@ final class PreviewModel: ObservableObject {
                 let client = try makeClient(address)
                 // Only the validated server address is persisted; no credentials or device identity.
                 preferences.set(client.origin.absoluteString, forKey: "serverOrigin")
-                let device = try await client.prepare()
+                let registration = try await client.discoverDesktop()
                 guard !Task.isCancelled, checkGeneration == generation else { return }
-                service = client
-                deviceRecord = device
-                localDevice = .read()
-                ready = true
-                connectionState = .notLoggedIn
-                detail = "复用现有记录（系统：\(device.recordedOS)，登记状态：\(device.registered)）。未修改服务器登记信息。"
-                do {
-                    let state = try await client.status()
-                    guard !Task.isCancelled, checkGeneration == generation else { return }
-                    deviceStatus = state
-                    recordCheck()
-                } catch {
-                    guard !Task.isCancelled, checkGeneration == generation else { return }
-                    deviceStatus = "状态查询失败，可重试"
+                switch registration {
+                case .registered: deviceStatus = "已登记"
+                case .awaitingApproval: deviceStatus = "等待审核"
+                case .registrationRequired: deviceStatus = "未登记"
+                case .reregistrationRequired: deviceStatus = "需要重新登记"
+                case .unknown: deviceStatus = "登记状态待确认"
                 }
+                connectionState = .notLoggedIn
+                detail = "桌面识别成功，已收到有效 AgentID 并读取登记资料。"
+                recordCheck()
             } catch {
                 guard !Task.isCancelled, checkGeneration == generation else { return }
                 ready = false
@@ -275,7 +293,7 @@ final class PreviewModel: ObservableObject {
         }
     }
     func refreshStatus() {
-        guard let service, !isBusy else { return }
+        guard let service, !isBusy, !reconnecting else { return }
         isBusy = true
         Task {
             defer { isBusy = false }
@@ -293,7 +311,7 @@ final class PreviewModel: ObservableObject {
     }
     func toggleMonitoring() {
         if monitoring { stopMonitoring(); return }
-        guard let client = service, ready, !isBusy else { return }
+        guard let client = service, ready, !isBusy, !reconnecting else { return }
         monitoring = true
         monitorTask = Task { [weak self] in
             var failures = 0
@@ -317,7 +335,7 @@ final class PreviewModel: ObservableObject {
         }
     }
     func probeHeartbeat() {
-        guard !heartbeating else { return }
+        guard !heartbeating, !reconnecting else { return }
         guard let service, let device = service.device, let host = service.origin.host,
               let port = service.heartbeatPort, port == 37527, ready, !isBusy else {
             detail = "尚未确认可用的心跳端点，请先检查服务器。"
@@ -337,6 +355,10 @@ final class PreviewModel: ObservableObject {
     }
     func stopHeartbeat() {
         heartbeatGeneration = UUID()
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnecting = false
+        reconnectAttempt = 0
         roleRefreshTask?.cancel()
         roleRefreshTask = nil
         heartbeatTask?.cancel()
@@ -347,6 +369,66 @@ final class PreviewModel: ObservableObject {
         if authenticationAccepted { detail = "本应用的心跳连接已停止，可重新连接。" }
     }
     func startHeartbeat() {
+        guard canStartHeartbeat else { return }
+        reconnectAttempt = 0
+        verifyAndReconnect(after: .zero)
+    }
+
+    private func retryHeartbeat() {
+        guard ready, authenticationAccepted, !heartbeating, !reconnecting else { return }
+        guard reconnectAttempt < reconnectDelays.count else {
+            detail = "自动重连未恢复，连接诊断中可查看原因。"
+            return
+        }
+        let delay = reconnectDelays[reconnectAttempt]
+        reconnectAttempt += 1
+        verifyAndReconnect(after: delay)
+    }
+
+    private func verifyAndReconnect(after delay: Duration) {
+        guard let client = service, let expectedID = client.device?.id else { return }
+        let generation = heartbeatGeneration
+        reconnecting = true
+        reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if delay > .zero { try await Task.sleep(for: delay) }
+                while self.isBusy || !self.networkAvailable { try await Task.sleep(for: .seconds(1)) }
+                try Task.checkCancellation()
+                let current = try await client.verifyDeviceForReconnect()
+                guard !Task.isCancelled, self.heartbeatGeneration == generation, self.service === client else { return }
+                guard let current, current.id == expectedID,
+                      DeviceRegistrationState.parse(response: nil, recorded: current.registered) == .registered else {
+                    self.requireLoginAfterReconnect("网络地址或设备记录已变化，请重新登录以识别本机。")
+                    return
+                }
+                self.deviceRecord = current
+                self.refreshLocalDeviceInfo()
+                self.reconnecting = false
+                self.reconnectTask = nil
+                self.connectHeartbeat()
+            } catch {
+                guard !Task.isCancelled, self.heartbeatGeneration == generation, self.service === client else { return }
+                if (error as? NACService.Failure)?.requiresLogin == true {
+                    self.requireLoginAfterReconnect("服务器要求重新认证，请登录。")
+                    return
+                }
+                self.fail(error)
+                self.heartbeatStatus = self.detail
+                self.reconnecting = false
+                self.reconnectTask = nil
+                self.retryHeartbeat()
+            }
+        }
+    }
+
+    private func requireLoginAfterReconnect(_ message: String) {
+        invalidate()
+        connectionState = .needsAction
+        detail = message
+    }
+
+    private func connectHeartbeat() {
         guard canStartHeartbeat, let service else { return }
         guard let device = service.device, let host = service.origin.host,
               let port = service.heartbeatPort, port == 37527 else {
@@ -368,11 +450,13 @@ final class PreviewModel: ObservableObject {
         detail = "正在连接…"
         heartbeatTask = Task { [weak self] in
             guard let self else { return }
+            var shouldRetry = false
             do {
                 try await connection.runContinuously(host: host, port: port, deviceID: device.id,
                     onAcknowledgement: { [weak self] count in
                         guard let self, self.heartbeatGeneration == generation, count > 0 else { return }
                         self.connectionState = .connected
+                        if count >= 2 { self.reconnectAttempt = 0 }
                         self.heartbeatCount = count
                         self.lastHeartbeat = Date()
                         self.heartbeatStatus = "心跳已应答 \(count) 次 · \(Date().formatted(date: .omitted, time: .standard))"
@@ -382,6 +466,7 @@ final class PreviewModel: ObservableObject {
                     })
                 guard self.heartbeatGeneration == generation else { return }
                 self.connectionState = .interrupted
+                shouldRetry = true
                 self.heartbeatStatus = "心跳会话已结束，请重新连接。"
                 self.detail = self.heartbeatStatus
             } catch is CancellationError {
@@ -392,13 +477,17 @@ final class PreviewModel: ObservableObject {
             } catch {
                 guard self.heartbeatGeneration == generation else { return }
                 self.connectionState = .interrupted
-                self.heartbeatStatus = (error as? HeartbeatProbe.Failure)?.message ?? "心跳异常，已停止"
+                let failure = error as? HeartbeatProbe.Failure
+                shouldRetry = failure?.allowsReconnect == true
+                self.heartbeatStatus = failure?.message ?? "心跳异常，已停止"
                 self.detail = "心跳连接已中断，可查看连接诊断或重新连接。"
             }
             guard self.heartbeatGeneration == generation else { return }
             self.heartbeating = false
             self.roleRefreshTask?.cancel()
             self.roleRefreshTask = nil
+            self.heartbeatTask = nil
+            if shouldRetry { self.retryHeartbeat() }
         }
     }
     private func refreshRole(service: any NACClient, generation: UUID) {
@@ -425,12 +514,12 @@ final class PreviewModel: ObservableObject {
         }
     }
     func submitLogin() {
-        guard let client = service, ready, !isBusy,
-              !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !isBusy, !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let scope = credentialServer else { openSettings(); return }
         let submittedPassword: String
         do {
             if !password.isEmpty { submittedPassword = password }
-            else if hasSavedPassword, let scope = credentialServer,
+            else if hasSavedPassword,
                     let stored = try passwordStore.read(server: scope, account: account), !stored.isEmpty {
                 submittedPassword = stored
             } else {
@@ -439,8 +528,6 @@ final class PreviewModel: ObservableObject {
             }
         } catch { credentialNotice = error.localizedDescription; return }
         let savePassword = rememberPassword
-        let scope = credentialServer
-        DiagnosticLog.shared.record(.loginRequested)
         resetLogin()
         stopHeartbeat()
         stopMonitoring()
@@ -449,9 +536,13 @@ final class PreviewModel: ObservableObject {
         let code = ""
         isBusy = true
         loggingIn = true
-        connectionState = .authenticating
-        authenticationStatus = "认证中"
-        detail = "正在验证账号，完成后将自动建立心跳连接。"
+        service = nil
+        ready = false
+        deviceRecord = nil
+        deviceStatus = "查询中"
+        connectionState = .checking
+        authenticationStatus = "未提交"
+        detail = "正在检查服务器和当前设备记录…"
         let generation = loginGeneration
         loginTask = Task {
             defer {
@@ -462,6 +553,18 @@ final class PreviewModel: ObservableObject {
                 }
             }
             do {
+                let client = try makeClient(scope)
+                let device = try await client.prepare()
+                guard !Task.isCancelled, loginGeneration == generation else { return }
+                service = client
+                deviceRecord = device
+                ready = true
+                preferences.set(client.origin.absoluteString, forKey: "serverOrigin")
+                refreshLocalDeviceInfo()
+                connectionState = .authenticating
+                authenticationStatus = "认证中"
+                detail = "正在验证账号，完成后将自动建立心跳连接。"
+                DiagnosticLog.shared.record(.loginRequested)
                 let result = try await client.login(account: submittedAccount, password: submittedPassword, verificationCode: code)
                 guard !Task.isCancelled, loginGeneration == generation, service === client else { return }
                 DiagnosticLog.shared.record(.loginResult, [.reason: result.requiresFurtherAction ? "needs_action" : "accepted"])
@@ -472,8 +575,8 @@ final class PreviewModel: ObservableObject {
                     connectionState = .needsAction
                 } else {
                     authenticationAccepted = true
-                    startHeartbeat()
-                    if savePassword, rememberPassword, let scope, credentialServer == scope, account == submittedAccount {
+                    connectHeartbeat()
+                    if savePassword, rememberPassword, credentialServer == scope, account == submittedAccount {
                         do {
                             try passwordStore.save(submittedPassword, server: scope, account: submittedAccount)
                             preferences.set(submittedAccount, forKey: "savedAccount:" + scope)
@@ -491,9 +594,10 @@ final class PreviewModel: ObservableObject {
                     deviceStatus = "认证后状态待确认"
                 }
             } catch {
-                guard !Task.isCancelled, loginGeneration == generation, service === client else { return }
+                guard !Task.isCancelled, loginGeneration == generation else { return }
                 connectionState = .notLoggedIn
-                DiagnosticLog.shared.record(.loginResult, [.reason: "auth_failed"])
+                if ready { DiagnosticLog.shared.record(.loginResult, [.reason: "auth_failed"]) }
+                else { deviceStatus = "未取得设备记录" }
                 authenticationStatus = "未完成"
                 fail(error)
             }

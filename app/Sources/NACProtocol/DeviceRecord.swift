@@ -34,6 +34,20 @@ struct DeviceRecord {
         location = value("Location")
     }
 
+    func matchesMac(_ hardwareAddress: String) -> Bool {
+        let system = recordedOS.lowercased()
+        guard ["mac", "macos", "mac os", "mac os x", "osx"].contains(where: {
+            system == $0 || system.hasPrefix($0 + " ")
+        }) else { return false }
+
+        func normalized(_ address: String) -> String {
+            address.lowercased().filter { !":-.".contains($0) }
+        }
+        let recorded = normalized(mac)
+        return recorded.count == 12 && recorded.allSatisfy { "0123456789abcdef".contains($0) }
+            && recorded == normalized(hardwareAddress)
+    }
+
     var registrationDescription: String {
         switch registered {
         case "1": return "已登记"

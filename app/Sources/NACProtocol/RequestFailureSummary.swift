@@ -5,8 +5,9 @@ enum RequestFailureSummary {
         switch request.url?.path.components(separatedBy: "/json/").last {
         case "auth/config": return "检查账号策略（auth/config）"
         case "auth/index": return "提交账号认证（auth/index）"
-        case "device/infoprocess": return "查询现有设备记录（device/infoprocess）"
+        case "device/infoprocess": return "识别本机设备（device/infoprocess）"
         case "device/netStatus": return "查询设备状态（device/netStatus）"
+        case "device/info": return "查询登记资料（device/info）"
         default: return "读取服务器配置"
         }
     }

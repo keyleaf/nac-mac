@@ -8,6 +8,19 @@
 
 当前 Swift app 明确选择 IP 查询并复用已有记录，没有实现完整的新设备发现和注册。这次不把仅找到接口的状态描述为新设备注册已可用。
 
+## 原生 Mac 桌面端补充（2026-11-09）
+
+后续检查了公司提供的原生 Mac 安装包，应用标识 `com.infogo.MAC3`，版本 `6.0.6039.3746.002.08`。DMG SHA-256 为 `748f6ad6e21b13c41f31825a04d33f5e67a5c484a8526ef9922c88371849f309`。REA 清单的父证据为 `ev_0b7f22cce8f44eaafe3f3332c9a88f28a32a76adbfe14631cd12663f07f14b66`。以下是 arm64 切片静态结论，和下文早期 iOS 流程分开。
+
+1. **连接及报告。** `NacSocketInterface` 的 `startSocketService`（0x1840）从 `IsiGetServerIP`、`IsiGetASMServerPort` 取值。端口读取 `ServerPort`，缺失或越界时原版回退到 37527（`IsaManage` 0x7f730）。`socketConnectSuccess`（0x300c）包含调用设备上报的分支。XML 由 `NacDeviceInfo` 的 `getUpdateAgentInfoXml:`（0x8014）生成，`NacSocketInterface` 的 0x4d00 以 `UpdateAgentInfo` 为交易名发到这个套接字。
+2. **消息内容与封装。** 桌面设备 XML 片段包含 `ServerID`、`AgentID`、`SubType=mac`、`OSName=MacOS`、网卡和硬件信息，大小写和字段与移动端 `dev_xml` 不同。`NacSocketService` 0x3e30 将片段放在带 `TradeCode` 的 `ASM` 根元素中，追加 `UserID`、`Token`、`DeviceType=300`，转为 GBK。0x68d0 使用 60 字节 ASM5 帧头，偏移 8、12、16 的字段均为 1，序列号在 52，原始内容长度在 56。使用 zlib 等级 9，并对交易名与压缩内容执行既有 `infogo` 字节变换。
+3. **取设备 ID。** 桌面原版发送前登记对应序列号的结果回调（`NacSocketService` 0x4174）。更新回调（`NacSocketInterface` 0x34cc）从 XML 结果字典读取 `AgentID`、`ServerID`、`Registered`，检查 `AgentID` 有值且不等于 `0` 后调用 `SaveDeviceID:`。助手网页通过本地 `WebCall_GetClientBaseInfo` 读取 `ASM.AgentID`。
+4. **读取登记详情。** 桌面网页发送 `device/info`，传入 `deviceId=<AgentID>`、`form=AgentReg` 及页面入口上下文。正式登记仍由 `register/submit` 处理，使用认证返回的角色、设备和场景信息。
+
+离线用独立 Python 合成样本验证了现有 Swift `ASMFrame` 与上述桌面封装逐字节一致，包括 GBK 原始字节、序列号及分段解码。合成样本只验证帧编码。仍需核对首次识别时空白 ID 和硬件字段的取值、当前服务器配置对应的端点，以及真实响应和重新登记策略。没有向服务器发送桌面设备上报。
+
+桌面发现使用实际试用版 TCP 传输做本机回环检查，运行 `python3 app/check-desktop-discovery.py`。合成请求使用空的初始 ID 和登录字段，只上报选中的网卡。模拟端验证字段及 ASM5 编码，返回分段 GBK 响应。客户端只接受同交易、同序列号且有有效 `AgentID` 的响应，之后仅在内存组装 `device/info` 请求。检查覆盖错误交易或序列号、缺失或零 ID、重复字段和 DTD。0.14.0 试用版在「连接诊断」中提供一次性桌面识别，用户确认后上报设备，收到有效 ID 后仅查询登记资料。该试用版已在公司内网返回有效 AgentID，并成功读取已登记状态。0.14.1 将这条桌面识别路径接入常规登录，确认已登记后才提交账号认证。0.14.1 已在一台已登记的 Mac 上通过公司内网的账号认证与持续心跳验证。首次登记和重新登记仍待联调。
+
 ## 1. 如何识别本机设备
 
 `deviceInfoUtils.getDeviceInfoProcess` 的静态流程：

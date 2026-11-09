@@ -25,7 +25,7 @@ final class DiagnosticLog {
     }
     private static let numbers: Set<Field> = [.httpStatus, .serverCode, .errorCode, .count, .elapsed, .latency, .sequence, .expensive]
     private static let categories: [Field: Set<String>] = [
-        .stage: ["configuration", "auth/config", "auth/index", "device/infoprocess", "device/netStatus"],
+        .stage: ["configuration", "auth/config", "auth/index", "device/infoprocess", "device/netStatus", "device/info"],
         .reason: ["accepted", "needs_action", "auth_failed", "completed", "cancelled", "timeout", "connect_failed", "send_failed", "receive_failed", "remote_closed", "unsupported_message", "invalid_xml", "frame_error", "failure", "stop_requested"],
         .state: ["notLoggedIn", "checking", "authenticating", "needsAction", "connecting", "connected", "stopped", "interrupted"],
         .phase: ["连接中", "首次应答", "后续应答", "等待下次心跳"],

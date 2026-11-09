@@ -30,7 +30,7 @@ enum AuthenticationRequest {
               origin.path.isEmpty || origin.path == "/",
               !context.osType.isEmpty, context.osType.utf8.allSatisfy({ (97...122).contains($0) }),
               !context.language.isEmpty, context.language.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || $0 == 45 }),
-              context.cacheMilliseconds >= 0, ["auth/config", "auth/index", "device/infoprocess", "device/netStatus"].contains(route) else { throw Failure.invalidContext }
+              context.cacheMilliseconds >= 0, ["auth/config", "auth/index", "device/infoprocess", "device/netStatus", "device/info"].contains(route) else { throw Failure.invalidContext }
         let headers = [context.headerOSType, context.serialNumber, context.webToken ?? "", context.diskID ?? ""]
         guard headers.allSatisfy({ !$0.contains("\r") && !$0.contains("\n") && !$0.contains("\0") }) else { throw Failure.invalidContext }
         let names = parameters.map(\.0)
